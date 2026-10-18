@@ -97,17 +97,30 @@ class RAGPipeline:
         # -------------------------------------------------------------
         # Step 4: Retrieve Client Entitlements & Pre-Search Verification
         # -------------------------------------------------------------
+        from app.retrieval.cache import entitlement_cache
+
         purchased_list = [r.strip() for r in (client.purchased_reports or "").split(",") if r.strip()]
         public_reports = [r.id for r in db.query(Report).filter(Report.access == "public").all()]
         allowed_reports = set(purchased_list + public_reports)
+
+        # 9. Check Entitlement-Aware Cache (partitioned by client & permitted scope)
+        cached_response = entitlement_cache.get(
+            client_id=client_id,
+            permitted_reports=allowed_reports,
+            query=query,
+            report_id=target_report_id
+        )
+        if cached_response:
+            logger.info(f"[RAGPipeline] Cache hit for client '{client_id}' within authorized report scope.")
+            return cached_response
 
         # If a specific report was targeted, verify access before performing any retrieval
         if target_report_id:
             has_access, reason = ClientService.check_report_access(db, client_id, target_report_id)
             if not has_access:
+                # 10. Record access-denial event WITHOUT logging protected report text
                 logger.warning(
-                    f"[RAGPipeline] Pre-check access denied: client '{client_id}' "
-                    f"attempted to query unpurchased report '{target_report_id}'"
+                    f"ACCESS_DENIED: client='{client_id}' attempted access to unpurchased report='{target_report_id}'"
                 )
                 ticket = EscalationService.create_escalation(
                     client_id=client_id,
@@ -115,8 +128,18 @@ class RAGPipeline:
                     reason=f"Access denied to unpurchased report '{target_report_id}'",
                     priority="high"
                 )
+                # 7 & 8. Mention report exists in library without revealing protected figures; offer upgrade
+                target_rep = db.query(Report).filter(Report.id == target_report_id).first()
+                rep_title_str = f" ('{target_rep.title}')" if target_rep else ""
+                upgrade_msg = (
+                    f"Access Denied: {reason}.\n\n"
+                    f"Report {target_report_id}{rep_title_str} exists in the Project Atlas market intelligence catalog, "
+                    f"but is not included in your active subscription tier. "
+                    f"To view its full quantitative projections and market metrics, please request an entitlement upgrade "
+                    f"from your account representative or submit an access request (Ticket: {ticket.get('ticket_id')})."
+                )
                 return ChatResponse(
-                    answer=f"Access Denied: {reason}. Please contact your account representative to purchase access.",
+                    answer=upgrade_msg,
                     citations=[],
                     confidence=0.0,
                     conflicts=[],
@@ -297,6 +320,30 @@ class RAGPipeline:
                 derived_values=derived_values
             )
 
+        # 7 & 8: Check for unpurchased catalog reports relevant to the query to offer upgrade
+        try:
+            unpurchased_meta = ClientService.get_unpurchased_reports_metadata(db, client_id)
+            relevant_unpurchased = []
+            for unp in unpurchased_meta:
+                title_words = set(re.findall(r"\w+", unp["title"].lower()))
+                query_words = set(re.findall(r"\w+", query.lower()))
+                overlap = title_words.intersection(query_words) - {
+                    "market", "report", "the", "and", "in", "for", "outlook", "industry", "global", "2024", "2025"
+                }
+                if overlap:
+                    relevant_unpurchased.append(unp)
+
+            if relevant_unpurchased:
+                upgrade_notes = ["\n\n**Additional Research Available in Project Atlas Library:**"]
+                for r in relevant_unpurchased[:2]:
+                    upgrade_notes.append(
+                        f"- Report {r['id']} ('{r['title']}'): Premium {r['access']} report available. "
+                        f"Submit an access request or contact your account representative to upgrade your subscription."
+                    )
+                final_answer += "\n".join(upgrade_notes)
+        except Exception as e:
+            logger.debug(f"Catalog upgrade note skipped: {e}")
+
         # Calibrate confidence score
         confidence = self._calculate_confidence(
             has_metrics=bool(unique_metrics),
@@ -306,9 +353,9 @@ class RAGPipeline:
         )
 
         # -------------------------------------------------------------
-        # Step 10: Structured API Response
+        # Step 10: Structured API Response & Entitlement-Aware Caching
         # -------------------------------------------------------------
-        return ChatResponse(
+        chat_response = ChatResponse(
             answer=final_answer,
             citations=citations,
             confidence=confidence,
@@ -319,6 +366,20 @@ class RAGPipeline:
             conversation_id=conversation_id,
             escalation_ticket=None
         )
+
+        # Cache response partitioned by client and authorized report scope
+        try:
+            entitlement_cache.set(
+                client_id=client_id,
+                permitted_reports=allowed_reports,
+                query=query,
+                response=chat_response,
+                report_id=target_report_id
+            )
+        except Exception as e:
+            logger.debug(f"Cache storage error: {e}")
+
+        return chat_response
 
     # =====================================================================
     # Security, Prompt Construction & Defense Methods
