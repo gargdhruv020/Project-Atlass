@@ -48,7 +48,19 @@ class Settings(BaseSettings):
         alias="CHROMA_COLLECTION_NAME"
     )
 
-    # Embedding Settings (Local Ollama)
+    # Embedding Settings (Hugging Face / Local Ollama)
+    EMBEDDING_PROVIDER: str = Field(
+        default="huggingface",
+        alias="EMBEDDING_PROVIDER"
+    )
+    HUGGINGFACE_MODEL_NAME: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        alias="HUGGINGFACE_MODEL_NAME"
+    )
+    HUGGINGFACE_API_KEY: Optional[str] = Field(
+        default=None,
+        alias="HUGGINGFACE_API_KEY"
+    )
     OLLAMA_BASE_URL: str = Field(
         default="http://localhost:11434",
         alias="OLLAMA_BASE_URL"

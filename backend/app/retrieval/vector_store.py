@@ -11,7 +11,7 @@ from chromadb.api.models.Collection import Collection
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.retrieval.embedding_provider import ollama_embedding_function
+from app.retrieval.embedding_provider import atlas_embedding_function, ollama_embedding_function
 from app.observability.logger import logger
 
 class VectorStoreService:
@@ -27,7 +27,7 @@ class VectorStoreService:
         self.persist_dir = Path(persist_dir or settings.CHROMA_PERSIST_DIRECTORY)
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = collection_name or settings.CHROMA_COLLECTION_NAME
-        self.embedding_function = ollama_embedding_function
+        self.embedding_function = atlas_embedding_function
         self._client: Optional[chromadb.PersistentClient] = None
         self._collection: Optional[Collection] = None
 
@@ -231,13 +231,31 @@ class VectorStoreService:
         """Check vector store health and persistence availability."""
         try:
             total_count = self.count()
+            emb_info = {}
+            if hasattr(self.embedding_function, "get_health_info"):
+                emb_info = self.embedding_function.get_health_info()
+            else:
+                emb_info = {
+                    "provider": getattr(settings, "EMBEDDING_PROVIDER", "huggingface"),
+                    "model": getattr(settings, "HUGGINGFACE_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"),
+                    "status": "ready"
+                }
+            provider = emb_info.get("provider", "huggingface")
+            model = emb_info.get("model", "sentence-transformers/all-MiniLM-L6-v2")
+            if "huggingface" in provider.lower():
+                emb_model_display = f"Hugging Face ({model}) with Ollama compatibility"
+            else:
+                emb_model_display = f"Ollama ({model})"
+
             return {
                 "status": "available",
                 "collection": self.collection_name,
                 "persist_directory": str(self.persist_dir.resolve()),
                 "total_chunks": total_count,
-                "embedding_model": f"Ollama ({settings.OLLAMA_MODEL})",
-                "embedding_base_url": settings.OLLAMA_BASE_URL
+                "embedding_provider": provider,
+                "embedding_model": emb_model_display,
+                "embedding_model_name": model,
+                "embedding_status": emb_info.get("status", "ready")
             }
         except Exception as e:
             return {

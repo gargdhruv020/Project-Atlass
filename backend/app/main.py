@@ -10,6 +10,10 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 
+import asyncio
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from app.core.config import settings
 from app.db.session import engine
 from app.api.v1.router import api_router
@@ -18,6 +22,19 @@ from app.api.v1.endpoints.ingest import router as ingest_router
 from app.api.v1.endpoints.escalations import router as escalations_router
 from app.api.v1.endpoints.health import router as health_router
 from app.observability.logger import logger
+
+class RequestTimeoutMiddleware(BaseHTTPMiddleware):
+    """Enforces request processing timeout across all API endpoints."""
+    async def dispatch(self, request: Request, call_next):
+        timeout = float(getattr(settings, "REQUEST_TIMEOUT_SECONDS", 30))
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"Request timeout after {timeout}s: {request.method} {request.url.path}")
+            return JSONResponse(
+                status_code=504,
+                content={"detail": f"Request processing timed out after {timeout} seconds"}
+            )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,6 +66,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Request Timeout Middleware
+app.add_middleware(RequestTimeoutMiddleware)
+
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +95,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "detail": "Request validation failed",
             "errors": errors
         }
+    )
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, StarletteHTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None)
+        )
+    logger.error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error occurred while processing request."}
     )
 
 # Mount primary endpoints at root level (/chat, /ingest, /escalations, /health)

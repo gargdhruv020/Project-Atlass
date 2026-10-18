@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.db.session import get_db
 from app.core.config import settings
 from app.retrieval.vector_store import vector_store
+from app.retrieval.llm_client import llm_client
 from app.schemas.health import HealthResponse
 
 router = APIRouter(tags=["Health"])
@@ -21,7 +22,8 @@ router = APIRouter(tags=["Health"])
 )
 def health_endpoint(db: Session = Depends(get_db)):
     """
-    Check overall health including MySQL and ChromaDB dependencies.
+    Check overall health including MySQL, ChromaDB, Hugging Face/Ollama embeddings,
+    LLM generation client, and LangGraph copilot workflow dependencies.
     """
     # 1. MySQL Check
     mysql_status = "connected"
@@ -40,6 +42,30 @@ def health_endpoint(db: Session = Depends(get_db)):
     except Exception as e:
         chroma_status = f"unavailable: {type(e).__name__}"
 
+    # 3. Vector Embeddings Diagnostics
+    emb_info = {}
+    try:
+        if hasattr(vector_store.embedding_function, "get_health_info"):
+            emb_info = vector_store.embedding_function.get_health_info()
+        else:
+            emb_info = {
+                "status": "ready",
+                "provider": getattr(settings, "EMBEDDING_PROVIDER", "huggingface"),
+                "model": getattr(settings, "HUGGINGFACE_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+            }
+    except Exception as e:
+        emb_info = {"status": f"degraded: {type(e).__name__}", "provider": settings.EMBEDDING_PROVIDER}
+
+    # 4. LLM Generation Client Diagnostics
+    llm_reachable = False
+    try:
+        llm_reachable = llm_client.is_available()
+    except Exception:
+        llm_reachable = False
+
+    llm_status = "reachable" if llm_reachable else "offline_fallback_enabled"
+
+    # 5. Overall System Status
     overall_status = "healthy" if (mysql_status == "connected" and "available" in chroma_status) else "degraded"
 
     return HealthResponse(
@@ -56,10 +82,34 @@ def health_endpoint(db: Session = Depends(get_db)):
             "chromadb": {
                 "status": chroma_status,
                 "collection": settings.CHROMA_COLLECTION_NAME,
-                "total_vectors": collection_count
+                "total_vectors": collection_count,
+                "persist_directory": str(vector_store.persist_dir.resolve())
+            },
+            "embeddings": {
+                "status": emb_info.get("status", "ready"),
+                "provider": emb_info.get("provider", settings.EMBEDDING_PROVIDER),
+                "model": emb_info.get("model", settings.HUGGINGFACE_MODEL_NAME),
+                "active_mode": emb_info.get("active_provider", "local")
+            },
+            "llm": {
+                "status": llm_status,
+                "provider": settings.LLM_PROVIDER,
+                "model": settings.LLM_MODEL,
+                "fallback_active": not llm_reachable
             },
             "langgraph": {
-                "status": "ready"
+                "status": "ready",
+                "workflow": "copilot_agent_graph",
+                "nodes": [
+                    "router",
+                    "entitlement_checker",
+                    "retriever",
+                    "read_only_sql",
+                    "calculator",
+                    "critic",
+                    "escalation",
+                    "writer"
+                ]
             }
         }
     )
