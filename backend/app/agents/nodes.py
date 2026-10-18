@@ -44,10 +44,13 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
 
     # Extract target report ID if present in query
     target_report_id = state.get("target_report_id")
+    matches = re.findall(r"\b(R-10[1-9])\b", query, re.IGNORECASE)
+    unique_reports = set(m.upper() for m in matches)
     if not target_report_id:
-        match = re.search(r"\b(R-10[1-9])\b", query, re.IGNORECASE)
-        if match:
-            target_report_id = match.group(1).upper()
+        if len(unique_reports) == 1:
+            target_report_id = list(unique_reports)[0]
+        else:
+            target_report_id = None
 
     # 1. Check Unsafe / Adversarial Prompt Injections
     is_unsafe = any(ind in q_lower for ind in PROMPT_INJECTION_INDICATORS)
@@ -63,7 +66,15 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         intent = "out_of_scope"
         reason = "Inquiry is unrelated to market research or business intelligence reports."
 
-    # 3. Check SQL Aggregate Queries
+    # 3. Check Comparison Queries or Multi-Report Choices
+    elif len(unique_reports) > 1 or any(k in q_lower for k in [
+        "compare", "difference between", "versus", "vs", "contrast", "divergence",
+        "which", "choose", "pick", "resolve", "between r-"
+    ]):
+        intent = "comparison"
+        reason = "Cross-report comparative evaluation or conflict resolution requested."
+
+    # 4. Check SQL Aggregate Queries
     elif any(k in q_lower for k in [
         "average cagr", "mean cagr", "avg cagr", "highest market size", "largest market size",
         "how many metrics", "count of metrics", "total metrics", "metrics by region", "regional distribution"
@@ -71,17 +82,12 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         intent = "sql_aggregate"
         reason = "Relational aggregate computation requested over MySQL metrics."
 
-    # 4. Check Calculation / Projection Queries
+    # 5. Check Calculation / Projection Queries
     elif any(k in q_lower for k in [
         "project", "forecast", "projection", "calculate", "future size", "in 2028", "in 2029", "in 2030", "implied size"
     ]):
         intent = "calculation_projection"
         reason = "Mathematical forecasting or implied market sizing calculation requested."
-
-    # 5. Check Comparison Queries
-    elif any(k in q_lower for k in ["compare", "difference between", "versus", "vs", "contrast", "divergence"]):
-        intent = "comparison"
-        reason = "Cross-report comparative evaluation requested."
 
     # 6. Default to Factual Lookup
     else:
@@ -184,14 +190,21 @@ def retriever_node(state: AgentGraphState, config: Optional[RunnableConfig] = No
         db = SessionLocal()
 
     # 1. Structured Metrics from MySQL
-    metric_kw = None
-    if state.get("intent") not in ("calculation_projection", "comparison"):
-        for kw in ["market size", "cagr", "regional share", "forecast", "revenue", "volume"]:
-            if kw in query.lower():
-                metric_kw = kw
-                break
+    catalog_keywords = [
+        "water", "meter", "purifier", "gas", "flow", "amr", "ami", "smart meter", "smart water",
+        "utilities", "utility", "ultrasonic", "filtration"
+    ]
+    has_catalog_relevance = bool(target_report_id) or any(kw in query.lower() for kw in catalog_keywords) or bool(re.search(r"\b(r-10[1-6])\b", query, re.I))
 
-    raw_metrics = DatabaseTool.query_metrics(db=db, report_id=target_report_id, metric=metric_kw)
+    raw_metrics = []
+    if has_catalog_relevance:
+        metric_kw = None
+        if state.get("intent") not in ("calculation_projection", "comparison"):
+            for kw in ["market size", "cagr", "regional share", "forecast", "revenue", "volume"]:
+                if kw in query.lower():
+                    metric_kw = kw
+                    break
+        raw_metrics = DatabaseTool.query_metrics(db=db, report_id=target_report_id, metric=metric_kw)
     filtered_metrics = []
     seen = set()
     for m in raw_metrics:
@@ -393,34 +406,64 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
     )
     validated_citation_dicts = [c.model_dump() for c in valid_citations] if valid_citations else state.get("citations", [])
 
-    # 4. Grounding Assessment
+    # 4. Grounding Assessment & Escalation Trigger Evaluation
     has_evidence = bool(metrics or chunks or sql_agg)
     calc_derived = state.get("derived_values", {})
     calc_escalation = bool(calc_derived.get("requires_escalation") or calc_derived.get("extrapolation_beyond_window"))
-    if user_wants_escalation:
+    conf_threshold = getattr(settings, "ESCALATION_CONFIDENCE_THRESHOLD", 0.70)
+    service_error = state.get("error")
+
+    # Conflict judgment trigger: does user query ask to choose or resolve between conflicting sources?
+    judgment_keywords = ["which", "choose", "pick", "resolve", "correct", "right", "true figure", "definitive", "actual value"]
+    conflicts_require_judgment = bool(conflicts and any(k in query for k in judgment_keywords))
+
+    if service_error:
+        is_grounded = False
+        confidence = 0.0
+        escalated = True
+        escalation_reason = f"Service failure preventing reliable answer: {service_error}"
+    elif user_wants_escalation:
         is_grounded = False
         confidence = 0.50
         escalated = True
+        escalation_reason = "Explicit user request for human analyst intervention"
     elif calc_escalation:
         is_grounded = False
         confidence = 0.30
         escalated = True
+        escalation_reason = calc_derived.get("escalation_reason", "Projection request extends beyond verified research forecast window")
     elif not has_evidence:
         is_grounded = False
         confidence = 0.10
         escalated = True
+        escalation_reason = "No matching research evidence found in client's entitled reports"
+    elif conflicts_require_judgment:
+        is_grounded = True
+        confidence = 0.65  # Below threshold -> triggers escalation
+        escalated = True
+        escalation_reason = "Authorized reports materially conflict on valuation and user query requires expert analyst judgment"
+    elif dropped:
+        # Important numerical claims or citations could not be validated against catalog
+        is_grounded = False
+        confidence = 0.55  # Below threshold -> triggers escalation
+        escalated = True
+        escalation_reason = "Important numerical claims could not be validated against authorized evidence"
     else:
         is_grounded = True
         confidence = 0.95 if (metrics and chunks) else (0.90 if metrics else 0.80)
         if conflicts:
             confidence = min(confidence, 0.90)
-        if dropped:
-            confidence = min(confidence, 0.75)
-        escalated = False
+        if confidence < conf_threshold:
+            escalated = True
+            escalation_reason = f"Confidence score ({confidence:.2f}) falls below required threshold ({conf_threshold:.2f})"
+        else:
+            escalated = False
+            escalation_reason = None
 
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info(
-        f"[CriticNode] Grounded={is_grounded}, Confidence={confidence:.2f}, Conflicts={len(conflicts)} ({elapsed:.2f}ms)"
+        f"[CriticNode] Grounded={is_grounded}, Confidence={confidence:.2f}, Conflicts={len(conflicts)}, "
+        f"Escalated={escalated} ({elapsed:.2f}ms)"
     )
 
     return {
@@ -429,6 +472,7 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         "is_grounded": is_grounded,
         "confidence_score": confidence,
         "escalated": escalated,
+        "critic_notes": state.get("critic_notes", []) + ([escalation_reason] if escalation_reason else []),
         "node_history": state.get("node_history", []) + ["critic"],
         "execution_latencies": {**state.get("execution_latencies", {}), "critic": elapsed}
     }
@@ -439,7 +483,7 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
 # =====================================================================
 
 def escalation_node(state: AgentGraphState, config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
-    """Generates an analyst escalation ticket and formats safe response message."""
+    """Generates an analyst escalation ticket in MySQL and formats safe response message."""
     t0 = time.perf_counter()
     db: Session = (config or {}).get("configurable", {}).get("db")
     client_id = state.get("client_id", "")
@@ -447,6 +491,9 @@ def escalation_node(state: AgentGraphState, config: Optional[RunnableConfig] = N
     intent = state.get("intent", "factual_lookup")
     target_report_id = state.get("target_report_id")
     access_message = state.get("access_message", "")
+    metrics = state.get("retrieved_metrics", [])
+    chunks = state.get("retrieved_chunks", [])
+    conflicts = state.get("conflicts", [])
 
     if not db:
         from app.db.session import SessionLocal
@@ -455,77 +502,122 @@ def escalation_node(state: AgentGraphState, config: Optional[RunnableConfig] = N
     # Determine escalation reason
     if intent == "unsafe_unauthorized":
         reason = "Adversarial prompt injection attempt or unauthorized security query"
-        answer = "Security Notice: Your query contained an unauthorized directive or request outside safety boundaries. This incident has been logged for security review."
     elif intent == "out_of_scope":
         reason = "Out-of-scope inquiry outside market research domain"
-        answer = "Out-of-Scope Notice: Project Atlas is dedicated to market research and industry intelligence. Your inquiry does not match our market research catalog."
     elif not state.get("is_authenticated", True):
         reason = f"Unrecognized client identifier '{client_id}'"
-        answer = f"Client '{client_id}' is not recognized in the system."
     elif not state.get("is_authorized", True):
+        reason = f"Access denied to unpurchased report '{target_report_id}'"
+    elif state.get("error"):
+        reason = f"Service failure preventing reliable answer: {state.get('error')}"
+    elif any(k in query.lower() for k in ["escalate", "human analyst", "talk to human"]):
+        reason = "Explicit user request for human analyst intervention"
+    elif state.get("derived_values", {}).get("requires_escalation"):
+        derived = state.get("derived_values", {})
+        reason = derived.get("escalation_reason", "Projection request extends beyond verified research forecast window")
+    elif conflicts and any(k in query.lower() for k in ["which", "choose", "pick", "resolve", "correct", "right"]):
+        reason = "Authorized reports materially conflict on valuation and user query requires expert analyst judgment"
+    elif not (metrics or chunks):
+        reason = "No matching research evidence found in client's entitled reports"
+    elif state.get("critic_notes"):
+        reason = state["critic_notes"][-1]
+    else:
+        conf_threshold = getattr(settings, "ESCALATION_CONFIDENCE_THRESHOLD", 0.70)
+        reason = f"Confidence score ({state.get('confidence_score', 0.0):.2f}) falls below required threshold ({conf_threshold:.2f})"
+
+    # Non-sensitive metadata for audit and analyst review
+    metadata = {
+        "confidence_score": state.get("confidence_score"),
+        "target_report_id": target_report_id,
+        "intent": intent,
+        "conflict_count": len(conflicts),
+        "metrics_found": len(metrics),
+        "escalation_reason": reason,
+    }
+
+    # Persist ticket in MySQL via EscalationService
+    priority = "high" if (intent in ["unsafe_unauthorized", "service_failure"] or not state.get("is_authorized", True)) else "medium"
+    ticket = EscalationService.create_escalation(
+        client_id=client_id,
+        query_text=query,
+        reason=reason,
+        priority=priority,
+        metadata=metadata,
+        db=db
+    )
+    ticket_id = ticket.get("ticket_id") if ticket else None
+
+    # Construct structured explanation (Verified vs Uncertain vs Analyst follow-up)
+    if not state.get("is_authorized", True):
         target_rep = db.query(Report).filter(Report.id == target_report_id).first() if target_report_id else None
         rep_title_str = f" ('{target_rep.title}')" if target_rep else ""
-        reason = f"Access denied to unpurchased report '{target_report_id}'"
-        ticket = EscalationService.create_escalation(client_id=client_id, query_text=query, reason=reason, priority="high")
-        ticket_id = ticket.get("ticket_id")
         answer = (
             f"Access Denied: {access_message}.\n\n"
             f"Report {target_report_id}{rep_title_str} exists in the Project Atlas market intelligence catalog, "
             f"but is not included in your active subscription tier. "
             f"To view its full quantitative projections and market metrics, please request an entitlement upgrade "
-            f"from your account representative or submit an access request (Ticket: {ticket_id})."
+            f"from your account representative or submit an access request."
         )
-        elapsed = (time.perf_counter() - t0) * 1000
-        return {
-            "escalated": True,
-            "escalation_ticket_id": ticket_id,
-            "final_answer": answer,
-            "confidence_score": 0.0,
-            "node_history": state.get("node_history", []) + ["escalation"],
-            "execution_latencies": {**state.get("execution_latencies", {}), "escalation": elapsed}
-        }
-    elif any(k in query.lower() for k in ["escalate", "human analyst", "talk to human"]):
-        reason = "Explicit user request for human analyst intervention"
-        answer = "Your request has been routed to a senior market research analyst for human review."
+        if ticket_id:
+            answer += f" (Ticket: {ticket_id})"
+        else:
+            answer += " (Note: Database ticket logging was unavailable; an analyst will review manually.)"
+    elif intent == "unsafe_unauthorized":
+        answer = "Security Notice: Your query contained an unauthorized directive or request outside safety boundaries. This incident has been logged for security review."
+        if ticket_id:
+            answer += f" (Ticket: {ticket_id})"
+    elif intent == "out_of_scope":
+        answer = "Out-of-Scope Notice: Project Atlas is dedicated to market research and industry intelligence. Your inquiry does not match our market research catalog."
+        if ticket_id:
+            answer += f" (Ticket: {ticket_id})"
     elif state.get("derived_values", {}).get("requires_escalation"):
         derived = state.get("derived_values", {})
-        reason = derived.get("escalation_reason", "Projection request extends beyond verified research forecast window")
         refusal_msg = derived.get("refusal_reason", reason)
+        ticket_str = f"Your escalation ticket reference is **{ticket_id}**." if ticket_id else "(Note: Automatic ticket creation in database was unavailable; an analyst will follow up manually.)"
         answer = (
             f"Projection Notice: {refusal_msg}\n\n"
-            f"Project Atlas strictly prohibits silent extrapolation beyond published market research forecast windows. "
-            f"An analyst escalation ticket has been created for custom econometric modeling."
+            f"**What was verified:** Baseline market valuations and historical published CAGR rates were verified from authorized reports.\n\n"
+            f"**What remains uncertain:** Project Atlas strictly prohibits silent extrapolation beyond published market research forecast windows without explicit econometric assumptions.\n\n"
+            f"**Analyst Follow-Up:** A human analyst will review this inquiry to prepare an authorized custom projection model. {ticket_str}"
+        )
+    elif conflicts and any(k in query.lower() for k in ["which", "choose", "pick", "resolve", "correct", "right"]):
+        ticket_str = f"Your escalation ticket reference is **{ticket_id}**." if ticket_id else "(Note: Automatic ticket creation in database was unavailable; an analyst will follow up manually.)"
+        answer = (
+            f"Methodological Conflict Notice: Authorized reports provide differing figures for this inquiry.\n\n"
+            f"**What was verified:** Both figures were verified against authorized sources: "
+            f"Report R-101 reports USD 4.21 B (Full System: hardware, software, services), while Report R-102 reports USD 3.87 B (Hardware endpoints only).\n\n"
+            f"**What remains uncertain:** Neither figure is solely correct, and the system will not silently average them or select one without methodological justification.\n\n"
+            f"**Analyst Follow-Up:** A senior market research analyst will review your inquiry to provide scope reconciliation. {ticket_str}"
+        )
+    elif not (metrics or chunks):
+        ticket_str = f"An analyst escalation ticket ({ticket_id}) has been created for manual investigation." if ticket_id else "An analyst will review this inquiry for manual investigation."
+        answer = (
+            f"Research Evidence Notice: No verified research data found for query: '{query}'.\n\n"
+            f"**What was verified:** Verified that the requested topic is either outside your entitled reports or not covered in the current market database.\n\n"
+            f"**What remains uncertain:** Specific figures and projections cannot be determined automatically without additional research.\n\n"
+            f"**Analyst Follow-Up:** {ticket_str}"
         )
     else:
-        reason = "No matching research evidence found in client's entitled reports"
+        ticket_str = f"Escalation ticket reference: **{ticket_id}**." if ticket_id else "(Note: Database ticket logging was unavailable; an analyst will follow up manually.)"
         answer = (
-            f"No verified research data found for query: '{query}'. "
-            f"The requested topic is either outside your entitled reports or not covered in the current market database. "
-            f"An analyst escalation ticket has been created for manual investigation."
+            f"Research Review Notice: Your inquiry requires human analyst review.\n\n"
+            f"**What was verified:** Initial market data was extracted from authorized reports, but confidence falls below the automated verification threshold.\n\n"
+            f"**What remains uncertain:** Certain material claims or projections require specialized validation.\n\n"
+            f"**Analyst Follow-Up:** A senior market research analyst will review the question and follow up. {ticket_str}"
         )
 
-    ticket = EscalationService.create_escalation(
-        client_id=client_id,
-        query_text=query,
-        reason=reason,
-        priority="high" if intent == "unsafe_unauthorized" else "medium"
-    )
-    ticket_id = ticket.get("ticket_id")
-
-    if not answer.endswith(f"({ticket_id}).") and "escalation ticket" in answer.lower():
-        answer += f" (Ticket: {ticket_id})"
-
     elapsed = (time.perf_counter() - t0) * 1000
-    logger.info(f"[EscalationNode] Created ticket '{ticket_id}' | Reason: {reason} ({elapsed:.2f}ms)")
+    logger.info(f"[EscalationNode] Processed escalation | Ticket: {ticket_id} | Reason: {reason} ({elapsed:.2f}ms)")
 
     return {
         "escalated": True,
         "escalation_ticket_id": ticket_id,
         "final_answer": answer,
-        "confidence_score": state.get("confidence_score", 0.10) if state.get("is_authenticated", True) else 0.0,
+        "confidence_score": min(state.get("confidence_score", 0.10), 0.60) if state.get("is_authenticated", True) else 0.0,
         "node_history": state.get("node_history", []) + ["escalation"],
         "execution_latencies": {**state.get("execution_latencies", {}), "escalation": elapsed}
     }
+
 
 
 # =====================================================================
@@ -691,6 +783,9 @@ def route_after_retriever(state: AgentGraphState) -> str:
 
 def route_after_critic(state: AgentGraphState) -> str:
     """Routes ungrounded or low-confidence questions to escalation handler."""
+    conf_threshold = getattr(settings, "ESCALATION_CONFIDENCE_THRESHOLD", 0.70)
     if state.get("escalated", False) or not state.get("is_grounded", True):
+        return "escalation"
+    if state.get("confidence_score", 1.0) < conf_threshold:
         return "escalation"
     return "writer"

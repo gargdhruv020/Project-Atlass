@@ -90,6 +90,13 @@ class Settings(BaseSettings):
         alias="RAG_TOP_K"
     )
 
+    # Escalation Settings
+    ESCALATION_CONFIDENCE_THRESHOLD: float = Field(
+        default=0.70,
+        alias="ESCALATION_CONFIDENCE_THRESHOLD",
+        description="Confidence threshold below which inquiries are escalated to human analysts"
+    )
+
     # Documents & Ingestion
     DOCUMENTS_DIR: str = Field(
         default=str(BASE_DIR / "documents"),

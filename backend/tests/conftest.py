@@ -20,9 +20,9 @@ def client():
     with TestClient(app) as test_client:
         yield test_client
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def db():
-    """Database session fixture."""
+    """Database session fixture with clean per-test transaction scope."""
     session = SessionLocal()
     try:
         yield session

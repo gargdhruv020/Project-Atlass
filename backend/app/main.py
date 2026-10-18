@@ -24,12 +24,14 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     logger.info(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}...")
     
-    # Verify MySQL connectivity
+    # Verify MySQL connectivity and ensure escalation_tickets exists
     try:
+        from app.models.escalation import EscalationTicket
+        EscalationTicket.__table__.create(bind=engine, checkfirst=True)
         with engine.connect() as conn:
             db_name = conn.execute(text("SELECT DATABASE();")).scalar()
             version = conn.execute(text("SELECT VERSION();")).scalar()
-            logger.info(f"MySQL Connected: database='{db_name}', version='{version}'")
+            logger.info(f"MySQL Connected: database='{db_name}', version='{version}' (escalation_tickets verified)")
     except Exception as e:
         logger.error(f"MySQL connection warning: {e}")
 

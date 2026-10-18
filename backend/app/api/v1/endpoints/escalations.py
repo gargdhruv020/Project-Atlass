@@ -38,9 +38,14 @@ async def list_escalations_endpoint(
         client_id=client_id,
         status=status,
         skip=skip,
-        limit=limit
+        limit=limit,
+        db=db
     )
-    total = EscalationService.count_escalations(client_id=client_id)
+    total = EscalationService.count_escalations(
+        client_id=client_id,
+        status=status,
+        db=db
+    )
 
     return EscalationsResponse(
         total=total,

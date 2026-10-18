@@ -127,8 +127,11 @@ class RAGPipeline:
                     client_id=client_id,
                     query_text=query,
                     reason=f"Access denied to unpurchased report '{target_report_id}'",
-                    priority="high"
+                    priority="high",
+                    db=db
                 )
+                ticket_id = ticket.get("ticket_id") if ticket else None
+                ticket_str = f" (Ticket: {ticket_id})" if ticket_id else " (Note: Database ticket logging was unavailable; an analyst will review manually.)"
                 # 7 & 8. Mention report exists in library without revealing protected figures; offer upgrade
                 target_rep = db.query(Report).filter(Report.id == target_report_id).first()
                 rep_title_str = f" ('{target_rep.title}')" if target_rep else ""
@@ -137,7 +140,7 @@ class RAGPipeline:
                     f"Report {target_report_id}{rep_title_str} exists in the Project Atlas market intelligence catalog, "
                     f"but is not included in your active subscription tier. "
                     f"To view its full quantitative projections and market metrics, please request an entitlement upgrade "
-                    f"from your account representative or submit an access request (Ticket: {ticket.get('ticket_id')})."
+                    f"from your account representative or submit an access request{ticket_str}."
                 )
                 return ChatResponse(
                     answer=upgrade_msg,
@@ -148,7 +151,7 @@ class RAGPipeline:
                     escalated=True,
                     client_id=client_id,
                     conversation_id=conversation_id,
-                    escalation_ticket=ticket.get("ticket_id")
+                    escalation_ticket=ticket_id
                 )
 
         # Check for explicit user escalation request
@@ -231,10 +234,13 @@ class RAGPipeline:
                 client_id=client_id,
                 query_text=query,
                 reason="Explicit user request for human analyst intervention",
-                priority="high"
+                priority="high",
+                db=db
             )
+            ticket_id = ticket.get("ticket_id") if ticket else None
+            ticket_str = f" Escalation ticket reference: **{ticket_id}**." if ticket_id else ""
             return ChatResponse(
-                answer="Your request has been routed to a senior market research analyst for human review.",
+                answer=f"Your request has been routed to a senior market research analyst for human review.{ticket_str}",
                 citations=citations,
                 confidence=0.50,
                 conflicts=conflicts,
@@ -242,7 +248,7 @@ class RAGPipeline:
                 escalated=True,
                 client_id=client_id,
                 conversation_id=conversation_id,
-                escalation_ticket=ticket.get("ticket_id")
+                escalation_ticket=ticket_id
             )
 
         if not has_evidence:
@@ -251,13 +257,16 @@ class RAGPipeline:
                 client_id=client_id,
                 query_text=query,
                 reason="No matching research evidence found in client's entitled reports",
-                priority="medium"
+                priority="medium",
+                db=db
             )
+            ticket_id = ticket.get("ticket_id") if ticket else None
+            ticket_str = f"An analyst escalation ticket ({ticket_id}) has been created for manual investigation." if ticket_id else "An analyst will review this inquiry for manual investigation."
             return ChatResponse(
                 answer=(
                     f"No verified research data found for query: '{query}'. "
                     f"The requested topic is either outside your entitled reports or not covered in the current market database. "
-                    f"An analyst escalation ticket ({ticket.get('ticket_id')}) has been created for manual investigation."
+                    f"{ticket_str}"
                 ),
                 citations=[],
                 confidence=0.10,
@@ -266,7 +275,7 @@ class RAGPipeline:
                 escalated=True,
                 client_id=client_id,
                 conversation_id=conversation_id,
-                escalation_ticket=ticket.get("ticket_id")
+                escalation_ticket=ticket_id
             )
 
         # -------------------------------------------------------------
@@ -299,8 +308,10 @@ class RAGPipeline:
                     client_id=client_id,
                     query_text=query,
                     reason="Document prompt injection attempt intercepted during answer generation",
-                    priority="high"
+                    priority="high",
+                    db=db
                 )
+                ticket_id = ticket.get("ticket_id") if ticket else None
                 return ChatResponse(
                     answer=final_answer,
                     citations=citations,
@@ -310,7 +321,7 @@ class RAGPipeline:
                     escalated=True,
                     client_id=client_id,
                     conversation_id=conversation_id,
-                    escalation_ticket=ticket.get("ticket_id")
+                    escalation_ticket=ticket_id
                 )
         else:
             final_answer = self._synthesize_grounded_fallback(

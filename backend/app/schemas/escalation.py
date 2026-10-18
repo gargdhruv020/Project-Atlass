@@ -2,7 +2,7 @@
 Pydantic Schemas for /escalations Endpoint
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 class EscalationRecord(BaseModel):
@@ -13,6 +13,8 @@ class EscalationRecord(BaseModel):
     priority: str = "medium"
     reason: Optional[str] = None
     created_at: str
+    metadata_json: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    updated_at: Optional[str] = None
 
 class EscalationsResponse(BaseModel):
     total: int
