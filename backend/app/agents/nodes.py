@@ -52,19 +52,34 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         else:
             target_report_id = None
 
-    # 1. Check Unsafe / Adversarial Prompt Injections
+    # 1. Check Unsafe / Adversarial Prompt Injections & DB Mutation
     is_unsafe = any(ind in q_lower for ind in PROMPT_INJECTION_INDICATORS)
-    if is_unsafe or any(k in q_lower for k in ["reveal all passwords", "dump database", "bypass permissions", "unmasked users"]):
+    if is_unsafe or any(k in q_lower for k in [
+        "reveal all passwords", "dump database", "bypass permissions", "unmasked users",
+        "drop table", "truncate table", "delete from", "insert into", "update clients"
+    ]):
         intent = "unsafe_unauthorized"
         reason = "Detected adversarial injection attempt or sensitive security breach query."
 
-    # 2. Check Out-of-Scope Requests
+    # 2. Check Out-of-Scope Requests (Politics, Personal Data, Other Clients' Purchases, Non-Research)
     elif any(k in q_lower for k in [
+        # Politics
+        "presidential election", "who will win the election", "political election", "prime minister",
+        "politics", "political party", "vote for", "election outcome", "foreign policy", "president of",
+        # Personal Information
+        "home address", "phone number", "personal email", "social security", "ssn",
+        "personal salary", "passport number", "personal information", "ceo's address",
+        # Other Clients' Purchases & Data
+        "client c-02 purchase", "client c-01 purchase", "c-02 purchased", "c-01 purchased",
+        "other clients' purchases", "other client purchases", "purchases of other clients",
+        "who purchased report", "list all clients", "c-02's purchase", "c-01's purchase",
+        "purchases of client", "other client's", "all clients' purchased",
+        # Non-Research / General
         "write a poem", "python function", "binary search", "weather in", "chocolate cake recipe",
-        "tell me a joke", "who won the match", "solve this leetcode", "javascript code"
+        "tell me a joke", "who won the match", "solve this leetcode", "javascript code", "recipe for"
     ]):
         intent = "out_of_scope"
-        reason = "Inquiry is unrelated to market research or business intelligence reports."
+        reason = "Inquiry involves politics, personal private information, other clients' purchases, or non-research topics."
 
     # 3. Check Comparison Queries or Multi-Report Choices
     elif len(unique_reports) > 1 or any(k in q_lower for k in [
@@ -200,10 +215,9 @@ def retriever_node(state: AgentGraphState, config: Optional[RunnableConfig] = No
     if has_catalog_relevance:
         metric_kw = None
         if state.get("intent") not in ("calculation_projection", "comparison"):
-            for kw in ["market size", "cagr", "regional share", "forecast", "revenue", "volume"]:
-                if kw in query.lower():
-                    metric_kw = kw
-                    break
+            matched_kws = [kw for kw in ["market size", "cagr", "regional share", "forecast", "revenue", "volume"] if kw in query.lower()]
+            if len(matched_kws) == 1:
+                metric_kw = matched_kws[0]
         raw_metrics = DatabaseTool.query_metrics(db=db, report_id=target_report_id, metric=metric_kw)
     filtered_metrics = []
     seen = set()
@@ -266,15 +280,30 @@ def retriever_node(state: AgentGraphState, config: Optional[RunnableConfig] = No
         reg_meta = REPORT_CATALOG_REGISTRY.get(rep_id, {})
         rep_title = meta.get("title") or reg_meta.get("title", f"Report {rep_id}")
         clean_content = c.get("content", "").strip()
+
+        is_injection = any(ind in clean_content.lower() for ind in PROMPT_INJECTION_INDICATORS)
+        if is_injection:
+            logger.warning(
+                f"[RetrieverNode] Adversarial prompt injection detected in chunk from report '{rep_id}', page {meta.get('page')}. "
+                f"Neutralizing malicious instruction while preserving document audit log."
+            )
+            text_snippet = "[Security Audit Notice: Embedded adversarial instruction detected and neutralized]"
+            supporting_excerpt = text_snippet
+            claim = text_snippet
+        else:
+            text_snippet = clean_content[:140]
+            supporting_excerpt = clean_content[:200]
+            claim = clean_content[:120]
+
         citations.append({
             "report_id": rep_id,
             "title": rep_title,
             "report_title": rep_title,
             "page": meta.get("page", 1),
             "source_type": "vector_retrieval",
-            "text_snippet": clean_content[:140],
-            "supporting_excerpt": clean_content[:200],
-            "claim": clean_content[:120]
+            "text_snippet": text_snippet,
+            "supporting_excerpt": supporting_excerpt,
+            "claim": claim
         })
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -296,21 +325,36 @@ def retriever_node(state: AgentGraphState, config: Optional[RunnableConfig] = No
 # =====================================================================
 
 def read_only_sql_node(state: AgentGraphState, config: Optional[RunnableConfig] = None) -> Dict[str, Any]:
-    """Executes safe, restricted parameterized aggregations over MySQL."""
+    """Executes safe, restricted parameterized aggregations using a SELECT-only MySQL account."""
     t0 = time.perf_counter()
-    db: Session = (config or {}).get("configurable", {}).get("db")
     permitted_reports = set(state.get("permitted_reports", []))
     query = state.get("query", "")
 
-    if not db:
-        from app.db.session import SessionLocal
-        db = SessionLocal()
+    # Strictly use the restricted read-only session
+    from app.db.session import ReadOnlySessionLocal
+    ro_db = ReadOnlySessionLocal()
+    try:
+        agg_result = ReadOnlySQLTool.execute_aggregate(
+            db=ro_db,
+            permitted_reports=permitted_reports,
+            query=query
+        )
+    finally:
+        ro_db.close()
 
-    agg_result = ReadOnlySQLTool.execute_aggregate(
-        db=db,
-        permitted_reports=permitted_reports,
-        query=query
-    )
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    if agg_result.get("status") == "blocked":
+        logger.warning(f"[ReadOnlySQLNode] Mutation or unauthorized query blocked: {agg_result.get('message')}")
+        return {
+            "sql_aggregate_results": agg_result,
+            "citations": state.get("citations", []),
+            "final_answer": agg_result.get("message", "Security Alert: Operation rejected."),
+            "escalated": True,
+            "escalation_reason": "Database modification attempt blocked by read-only security filter.",
+            "node_history": state.get("node_history", []) + ["read_only_sql"],
+            "execution_latencies": {**state.get("execution_latencies", {}), "read_only_sql": elapsed}
+        }
 
     # Format into a relational citation
     citations = state.get("citations", []) + [{
@@ -321,7 +365,6 @@ def read_only_sql_node(state: AgentGraphState, config: Optional[RunnableConfig] 
         "text_snippet": agg_result.get("details")
     }]
 
-    elapsed = (time.perf_counter() - t0) * 1000
     logger.info(f"[ReadOnlySQLNode] Aggregate executed: {agg_result.get('aggregation')} ({elapsed:.2f}ms)")
 
     return {
@@ -567,7 +610,13 @@ def escalation_node(state: AgentGraphState, config: Optional[RunnableConfig] = N
         if ticket_id:
             answer += f" (Ticket: {ticket_id})"
     elif intent == "out_of_scope":
-        answer = "Out-of-Scope Notice: Project Atlas is dedicated to market research and industry intelligence. Your inquiry does not match our market research catalog."
+        answer = (
+            "Out-of-Scope Notice: Thank you for contacting Project Atlas. We specialize exclusively in B2B market research, "
+            "industry forecasts, and utility intelligence (such as smart water meters and advanced filtration). "
+            "We politely decline inquiries concerning political topics, personal private information, other "
+            "clients' commercial accounts, or non-research questions. Please feel free to ask a market research "
+            "question related to our published industry reports."
+        )
         if ticket_id:
             answer += f" (Ticket: {ticket_id})"
     elif state.get("derived_values", {}).get("requires_escalation"):
@@ -673,7 +722,11 @@ def writer_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
             meta = c.get("metadata", {})
             rep_id = meta.get("report_id", "Unknown")
             page = meta.get("page", 1)
-            snippet = c.get("content", "").replace("\n", " ").strip()
+            raw_content = c.get("content", "")
+            if any(ind in raw_content.lower() for ind in PROMPT_INJECTION_INDICATORS):
+                parts.append(f"- [Report {rep_id}, Page {page}]: *[Security Notice: Untrusted instruction trap in document neutralized per security policy]*")
+                continue
+            snippet = raw_content.replace("\n", " ").strip()
             if len(snippet) > 180:
                 snippet = snippet[:177] + "..."
             parts.append(f"- [Report {rep_id}, Page {page}]: \"{snippet}\"")

@@ -5,9 +5,6 @@ Provides structured SQL retrieval over MySQL tables (reports, market_metrics, cl
 
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from app.services.report_service import ReportService
-from app.services.client_service import ClientService
-
 class DatabaseTool:
     @staticmethod
     def query_metrics(
@@ -18,6 +15,7 @@ class DatabaseTool:
         period: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Query structured market metrics."""
+        from app.services.report_service import ReportService
         results = ReportService.search_metrics(
             db=db,
             report_id=report_id,
@@ -42,6 +40,7 @@ class DatabaseTool:
     @staticmethod
     def check_client_access(db: Session, client_id: str, report_id: str) -> Dict[str, Any]:
         """Validate client access for a given report."""
+        from app.services.client_service import ClientService
         has_access, reason = ClientService.check_report_access(db, client_id, report_id)
         return {
             "client_id": client_id,

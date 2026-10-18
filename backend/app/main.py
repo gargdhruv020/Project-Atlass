@@ -37,6 +37,19 @@ class RequestTimeoutMiddleware(BaseHTTPMiddleware):
                 content={"detail": f"Request processing timed out after {timeout} seconds"}
             )
 
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Enforces request payload size limits across all API endpoints (HTTP 413)."""
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        max_bytes = getattr(settings, "MAX_REQUEST_SIZE_BYTES", 10_000_000)
+        if content_length and int(content_length) > max_bytes:
+            logger.warning(f"Oversized request rejected: {content_length} bytes exceeds {max_bytes} limit")
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Payload Too Large: Request exceeds maximum size limit of {max_bytes} bytes."}
+            )
+        return await call_next(request)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
@@ -69,6 +82,9 @@ app = FastAPI(
 
 # Request Timeout Middleware
 app.add_middleware(RequestTimeoutMiddleware)
+
+# Request Size Limit Middleware (HTTP 413)
+app.add_middleware(RequestSizeLimitMiddleware)
 
 # CORS Middleware
 app.add_middleware(

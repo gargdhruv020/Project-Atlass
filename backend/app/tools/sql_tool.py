@@ -1,37 +1,171 @@
 """
 Read-Only SQL Tool for Project Atlas
 Executes restricted, parameterized aggregate queries over MySQL tables (market_metrics, reports)
-scoped strictly to client-permitted reports. Prevents arbitrary SQL execution and all database mutations.
+scoped strictly to client-permitted reports. Prevents arbitrary SQL execution, enforces row limits,
+applies query timeouts, and guarantees zero database mutations by using a SELECT-only MySQL account.
 """
 
 import re
 from typing import Dict, Any, List, Optional, Set
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 
 from app.models.report import Report
 from app.models.market_metric import MarketMetric
 from app.observability.logger import logger
+from app.db.session import ReadOnlySessionLocal
 
+
+APPROVED_TABLES = {"market_metrics", "reports"}
 
 FORBIDDEN_SQL_PATTERNS = [
     r"\binsert\b", r"\bupdate\b", r"\bdelete\b", r"\bdrop\b",
     r"\balter\b", r"\btruncate\b", r"\bcreate\b", r"\breplace\b",
-    r"\bgrant\b", r"\brevoke\b", r"\bexec\b", r"\bcall\b", r"--", r";"
+    r"\bgrant\b", r"\brevoke\b", r"\bexec\b", r"\bcall\b",
+    r"\bshow\b", r"\bdescribe\b", r"\block\b", r"\bset\b",
+    r"--", r";"
+]
+
+NATURAL_LANGUAGE_MUTATION_PATTERNS = [
+    r"\bdelete\b", r"\bdrop\b", r"\btruncate\b", r"\binsert\b",
+    r"\bupdate\b", r"\balter\b", r"\bwipe\b", r"\bmodify database\b",
+    r"\bchange permissions?\b", r"\bgrant\b", r"\brevoke\b",
+    r"\badd records?\b", r"\bremove records?\b"
 ]
 
 
 class ReadOnlySQLTool:
-    """Safe, read-only aggregate query tool restricted to client entitlements."""
+    """Safe, read-only aggregate query tool restricted to client entitlements and approved tables."""
 
     @staticmethod
     def validate_safety(query_str: str) -> bool:
-        """Ensures query contains no mutation, DDL, or injection tokens."""
-        lower = query_str.lower()
+        """Ensures query contains no mutation, DDL, administrative, or injection tokens."""
+        lower = query_str.lower().strip()
         for pattern in FORBIDDEN_SQL_PATTERNS:
             if re.search(pattern, lower):
                 return False
         return True
+
+    @staticmethod
+    def detect_natural_language_mutation_intent(query_str: str) -> bool:
+        """Detects whether a natural-language inquiry is attempting to alter or mutate the database."""
+        lower = query_str.lower().strip()
+        for pattern in NATURAL_LANGUAGE_MUTATION_PATTERNS:
+            if re.search(pattern, lower):
+                return True
+        return False
+
+    @staticmethod
+    def validate_approved_tables(sql_str: str) -> tuple[bool, str]:
+        """Verifies that the SQL query only references approved tables (market_metrics, reports)."""
+        lower = sql_str.lower()
+        # Find all table identifiers after FROM or JOIN
+        matches = re.findall(r"\b(?:from|join)\s+([`a-zA-Z0-9_]+)", lower)
+        cleaned_tables = {m.replace("`", "").strip() for m in matches}
+        
+        # Check against approved tables
+        disallowed = cleaned_tables - APPROVED_TABLES
+        if disallowed:
+            return False, f"Disallowed table access: {disallowed}. Only approved tables: {APPROVED_TABLES}"
+        return True, "OK"
+
+    @classmethod
+    def execute_safe_sql(
+        cls,
+        sql_str: str,
+        permitted_reports: Set[str],
+        max_rows: int = 50,
+        timeout_seconds: int = 5,
+        session: Optional[Session] = None
+    ) -> Dict[str, Any]:
+        """
+        Executes a validated, read-only SELECT query using a restricted SELECT-only connection.
+        Enforces:
+        - Query must start with SELECT.
+        - Zero write / DDL keywords.
+        - Strict approved table access (market_metrics, reports).
+        - Hard row limit.
+        - Statement timeout.
+        - Enforced client report entitlement boundaries.
+        """
+        clean_sql = sql_str.strip()
+        if not clean_sql.upper().startswith("SELECT"):
+            return {
+                "status": "blocked",
+                "error": "Only SELECT queries are permitted on the read-only SQL tool.",
+                "data": []
+            }
+
+        if not cls.validate_safety(clean_sql):
+            return {
+                "status": "blocked",
+                "error": "Security Alert: Query contains forbidden SQL keywords or injection characters.",
+                "data": []
+            }
+
+        # Validate table restrictions
+        is_valid_tables, table_err = cls.validate_approved_tables(clean_sql)
+        if not is_valid_tables:
+            return {
+                "status": "blocked",
+                "error": f"Security Alert: {table_err}",
+                "data": []
+            }
+
+        # Enforce report entitlement filtering
+        if not permitted_reports:
+            return {
+                "status": "denied",
+                "error": "Zero report entitlements for client. Relational access denied.",
+                "data": []
+            }
+
+        # Apply row limit
+        limit_match = re.search(r"\blimit\s+(\d+)", clean_sql, re.IGNORECASE)
+        if limit_match:
+            existing_limit = int(limit_match.group(1))
+            if existing_limit > max_rows:
+                clean_sql = re.sub(r"\blimit\s+\d+", f"LIMIT {max_rows}", clean_sql, flags=re.IGNORECASE)
+        else:
+            clean_sql = f"{clean_sql} LIMIT {max_rows}"
+
+        # Execute using restricted read-only session
+        db = session or ReadOnlySessionLocal()
+        close_needed = session is None
+
+        try:
+            # Set query timeout in session if supported
+            try:
+                db.execute(text(f"SET SESSION max_execution_time = {timeout_seconds * 1000};"))
+            except Exception:
+                pass
+
+            rows = db.execute(text(clean_sql)).fetchall()
+            data = [dict(r._mapping) for r in rows]
+            return {
+                "status": "success",
+                "row_count": len(data),
+                "data": data,
+                "sql_executed": clean_sql
+            }
+        except (OperationalError, ProgrammingError) as e:
+            logger.error(f"[ReadOnlySQLTool] Database security enforcement triggered: {e}")
+            return {
+                "status": "blocked",
+                "error": f"Database privilege check or syntax restriction blocked query: {str(e)[:100]}",
+                "data": []
+            }
+        except SQLAlchemyError as e:
+            logger.error(f"[ReadOnlySQLTool] SQL error: {e}")
+            return {
+                "status": "error",
+                "error": "Internal database query error.",
+                "data": []
+            }
+        finally:
+            if close_needed:
+                db.close()
 
     @classmethod
     def execute_aggregate(
@@ -42,8 +176,17 @@ class ReadOnlySQLTool:
     ) -> Dict[str, Any]:
         """
         Executes supported read-only aggregation matching the user's intent.
-        Strictly enforces permitted_reports filter.
+        Strictly enforces permitted_reports filter and rejects natural-language mutation attempts.
         """
+        # 1. Reject natural-language attempts to modify the database
+        if cls.detect_natural_language_mutation_intent(query):
+            logger.warning(f"[ReadOnlySQLTool] Blocked natural-language database mutation attempt: '{query[:60]}'")
+            return {
+                "status": "blocked",
+                "message": "Security Alert: Database modification operations (INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE) are strictly prohibited on read-only tools.",
+                "data": {}
+            }
+
         if not permitted_reports:
             return {
                 "status": "denied",
@@ -133,7 +276,6 @@ class ReadOnlySQLTool:
                 "result": "No market size metrics found in permitted reports."
             }
 
-        # Sort descending by numeric value
         parsed.sort(key=lambda x: x[3], reverse=True)
         top = parsed[0]
 

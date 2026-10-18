@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     DB_PORT: int = Field(default=3306, alias="DB_PORT")
     DB_USER: str = Field(default="root", alias="DB_USER")
     DB_PASSWORD: str = Field(default="258000", alias="DB_PASSWORD")
+    DB_READONLY_USER: str = Field(default="atlas_readonly", alias="DB_READONLY_USER")
+    DB_READONLY_PASSWORD: str = Field(default="AtlasReadOnly2026!", alias="DB_READONLY_PASSWORD")
     DB_NAME: str = Field(default="project_atlas", alias="DB_NAME")
 
     # ChromaDB Settings
@@ -126,6 +128,17 @@ class Settings(BaseSettings):
         import urllib.parse
         encoded_user = urllib.parse.quote_plus(self.DB_USER)
         encoded_password = urllib.parse.quote_plus(self.DB_PASSWORD)
+        return (
+            f"mysql+pymysql://{encoded_user}:{encoded_password}@"
+            f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}?charset=utf8mb4"
+        )
+
+    @property
+    def READONLY_SQLALCHEMY_DATABASE_URI(self) -> str:
+        """Construct read-only MySQL SQLAlchemy URI with SELECT-only credentials."""
+        import urllib.parse
+        encoded_user = urllib.parse.quote_plus(self.DB_READONLY_USER)
+        encoded_password = urllib.parse.quote_plus(self.DB_READONLY_PASSWORD)
         return (
             f"mysql+pymysql://{encoded_user}:{encoded_password}@"
             f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}?charset=utf8mb4"
