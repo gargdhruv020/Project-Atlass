@@ -23,6 +23,7 @@ from app.models.report import Report
 from app.tools.db_tool import DatabaseTool
 from app.retrieval.vector_store import vector_store_service
 from app.retrieval.llm_client import llm_client, LLMClient
+from app.tools.citation_validator import CitationValidator, ConflictDetector, REPORT_CATALOG_REGISTRY
 from app.schemas.chat import ChatResponse, CitationItem, ConflictItem
 from app.observability.logger import logger
 
@@ -216,7 +217,7 @@ class RAGPipeline:
         # -------------------------------------------------------------
         # Step 7: Conflict Detection & Derived Value Calculation
         # -------------------------------------------------------------
-        conflicts = self._detect_conflicts(unique_metrics, verified_vector_chunks)
+        conflicts = self._detect_conflicts(unique_metrics, verified_vector_chunks, permitted_reports=allowed_reports)
         derived_values = self._calculate_derived_values(unique_metrics, query)
 
         # Build Citations
@@ -344,12 +345,28 @@ class RAGPipeline:
         except Exception as e:
             logger.debug(f"Catalog upgrade note skipped: {e}")
 
-        # Calibrate confidence score
-        confidence = self._calculate_confidence(
-            has_metrics=bool(unique_metrics),
-            has_chunks=bool(verified_vector_chunks),
-            has_conflicts=bool(conflicts),
-            answer_text=final_answer
+        # Calibrate confidence score and sanitize answer with CitationValidator
+        sanitized_answer, valid_citations, validated_confidence, esc_req = (
+            CitationValidator.sanitize_and_revise_answer(
+                answer=final_answer,
+                citations=citations,
+                permitted_reports=allowed_reports,
+                derived_values=derived_values,
+                metrics=unique_metrics,
+                chunks=verified_vector_chunks,
+                conflicts=conflicts
+            )
+        )
+        final_answer = sanitized_answer
+        citations = valid_citations
+        confidence = min(
+            self._calculate_confidence(
+                has_metrics=bool(unique_metrics),
+                has_chunks=bool(verified_vector_chunks),
+                has_conflicts=bool(conflicts),
+                answer_text=final_answer
+            ),
+            validated_confidence
         )
 
         # -------------------------------------------------------------
@@ -562,31 +579,16 @@ class RAGPipeline:
     def _detect_conflicts(
         self,
         metrics: List[Dict[str, Any]],
-        chunks: List[Dict[str, Any]]
+        chunks: List[Dict[str, Any]],
+        permitted_reports: Optional[Set[str]] = None
     ) -> List[ConflictItem]:
-        """Identifies conflicting or diverging metrics across different reports."""
-        conflicts: List[ConflictItem] = []
-        metrics_by_name: Dict[str, List[Dict[str, Any]]] = {}
-
-        for m in metrics:
-            m_name = (m.get("metric") or "").lower()
-            metrics_by_name.setdefault(m_name, []).append(m)
-
-        for m_name, items in metrics_by_name.items():
-            if len(items) > 1:
-                reps = list({i.get("report_id") for i in items if i.get("report_id")})
-                if len(reps) > 1:
-                    desc_parts = [
-                        f"{i.get('report_id')}: {i.get('value')} ({i.get('period')}, {i.get('scope_note') or 'standard scope'})"
-                        for i in items
-                    ]
-                    conflicts.append(ConflictItem(
-                        metric=items[0].get("metric", m_name.title()),
-                        description="Methodological divergence across reports: " + "; ".join(desc_parts),
-                        sources=reps
-                    ))
-
-        return conflicts
+        """Identifies conflicting or diverging metrics across different reports using ConflictDetector."""
+        permitted = permitted_reports or {m.get("report_id") for m in metrics if m.get("report_id")}
+        return ConflictDetector.detect_conflicts(
+            metrics=metrics,
+            chunks=chunks,
+            permitted_reports=permitted
+        )
 
     def _calculate_derived_values(
         self,
@@ -628,30 +630,43 @@ class RAGPipeline:
         metrics: List[Dict[str, Any]],
         chunks: List[Dict[str, Any]]
     ) -> List[CitationItem]:
-        """Constructs normalized citation items with report ID, title, and page."""
+        """Constructs normalized citation items with actual report ID, title, and page."""
         citations: List[CitationItem] = []
 
         for m in metrics:
+            rep_id = m.get("report_id")
+            reg = REPORT_CATALOG_REGISTRY.get(rep_id, {})
+            title = m.get("report_title") or reg.get("title", f"Report {rep_id}")
             citations.append(CitationItem(
-                report_id=m.get("report_id"),
-                title=m.get("report_title"),
+                report_id=rep_id,
+                title=title,
+                report_title=title,
                 metric=m.get("metric"),
                 period=m.get("period"),
                 region=m.get("region"),
                 value=m.get("value"),
                 page=None,
                 source_type="relational_sql",
-                text_snippet=m.get("scope_note")
+                text_snippet=m.get("scope_note"),
+                supporting_excerpt=m.get("scope_note") or f"{m.get('metric')}: {m.get('value')} ({m.get('period')})",
+                claim=f"{m.get('metric')} in {m.get('period')}: {m.get('value')}"
             ))
 
         for c in chunks:
             meta = c.get("metadata", {})
+            rep_id = meta.get("report_id")
+            reg = REPORT_CATALOG_REGISTRY.get(rep_id, {})
+            title = meta.get("title") or reg.get("title", f"Report {rep_id}")
+            content = c.get("content", "").strip()
             citations.append(CitationItem(
-                report_id=meta.get("report_id"),
-                title=meta.get("title"),
+                report_id=rep_id,
+                title=title,
+                report_title=title,
                 page=meta.get("page", 1),
                 source_type="vector_retrieval",
-                text_snippet=c.get("content", "")[:140]
+                text_snippet=content[:140],
+                supporting_excerpt=content[:200],
+                claim=content[:120]
             ))
 
         return citations

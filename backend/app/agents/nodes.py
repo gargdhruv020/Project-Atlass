@@ -25,6 +25,7 @@ from app.models.report import Report
 from app.tools.db_tool import DatabaseTool
 from app.tools.calculator import MarketCalculator
 from app.tools.sql_tool import ReadOnlySQLTool
+from app.tools.citation_validator import CitationValidator, ConflictDetector, REPORT_CATALOG_REGISTRY
 from app.retrieval.vector_store import vector_store_service
 from app.retrieval.rag_pipeline import PROMPT_INJECTION_INDICATORS
 from app.schemas.chat import ChatResponse, CitationItem, ConflictItem
@@ -225,27 +226,42 @@ def retriever_node(state: AgentGraphState, config: Optional[RunnableConfig] = No
         else:
             logger.error(f"ACCESS_DENIED_CHUNK: Blocked unentitled chunk from '{rep_id}' for '{client_id}'")
 
-    # Build initial citations
+    # Build initial citations with actual metadata (no invented page numbers)
     citations: List[Dict[str, Any]] = []
     for m in filtered_metrics:
+        rep_id = m.get("report_id")
+        reg_meta = REPORT_CATALOG_REGISTRY.get(rep_id, {})
+        rep_title = m.get("report_title") or reg_meta.get("title", f"Report {rep_id}")
         citations.append({
-            "report_id": m.get("report_id"),
+            "report_id": rep_id,
+            "title": rep_title,
+            "report_title": rep_title,
             "metric": m.get("metric"),
             "period": m.get("period"),
             "region": m.get("region"),
             "value": m.get("value"),
+            "page": None,
             "source_type": "relational_sql",
-            "text_snippet": m.get("scope_note")
+            "text_snippet": m.get("scope_note"),
+            "supporting_excerpt": m.get("scope_note") or f"{m.get('metric')}: {m.get('value')} ({m.get('period')})",
+            "claim": f"{m.get('metric')} in {m.get('period')}: {m.get('value')}"
         })
 
     for c in verified_chunks:
         meta = c.get("metadata", {})
+        rep_id = meta.get("report_id")
+        reg_meta = REPORT_CATALOG_REGISTRY.get(rep_id, {})
+        rep_title = meta.get("title") or reg_meta.get("title", f"Report {rep_id}")
+        clean_content = c.get("content", "").strip()
         citations.append({
-            "report_id": meta.get("report_id"),
-            "title": meta.get("title"),
+            "report_id": rep_id,
+            "title": rep_title,
+            "report_title": rep_title,
             "page": meta.get("page", 1),
             "source_type": "vector_retrieval",
-            "text_snippet": c.get("content", "")[:140]
+            "text_snippet": clean_content[:140],
+            "supporting_excerpt": clean_content[:200],
+            "claim": clean_content[:120]
         })
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -347,25 +363,37 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         k in query for k in ["escalate", "human analyst", "talk to human", "support ticket"]
     )
 
-    # 2. Conflict Detection across reports
-    conflicts: List[Dict[str, Any]] = []
-    metrics_by_name: Dict[str, List[Dict[str, Any]]] = {}
-    for m in metrics:
-        name = (m.get("metric") or "").lower()
-        metrics_by_name.setdefault(name, []).append(m)
+    permitted_reports = set(state.get("permitted_reports", [])) or {m.get("report_id") for m in metrics if m.get("report_id")}
 
-    for name, items in metrics_by_name.items():
-        if len(items) > 1:
-            reps = list({i.get("report_id") for i in items if i.get("report_id")})
-            if len(reps) > 1:
-                desc = [f"{i.get('report_id')}: {i.get('value')} ({i.get('period')}, {i.get('scope_note') or 'standard scope'})" for i in items]
-                conflicts.append({
-                    "metric": items[0].get("metric", name.title()),
-                    "description": "Methodological divergence across reports: " + "; ".join(desc),
-                    "sources": reps
-                })
+    # 2. Entitlement-Aware Conflict Detection using ConflictDetector
+    conflict_items = ConflictDetector.detect_conflicts(
+        metrics=metrics,
+        chunks=chunks,
+        permitted_reports=permitted_reports
+    )
+    conflicts = [
+        {
+            "metric": c.metric,
+            "description": c.description,
+            "sources": c.sources,
+            "scope_differences": c.scope_differences,
+            "unresolved": c.unresolved
+        }
+        for c in conflict_items
+    ]
 
-    # 3. Grounding Assessment
+    # 3. Validate existing citations against authorized catalog
+    raw_citations = [
+        CitationItem(**c) if isinstance(c, dict) else c
+        for c in state.get("citations", [])
+    ]
+    valid_citations, dropped = CitationValidator.validate_citations(
+        citations=raw_citations,
+        permitted_reports=permitted_reports
+    )
+    validated_citation_dicts = [c.model_dump() for c in valid_citations] if valid_citations else state.get("citations", [])
+
+    # 4. Grounding Assessment
     has_evidence = bool(metrics or chunks or sql_agg)
     calc_derived = state.get("derived_values", {})
     calc_escalation = bool(calc_derived.get("requires_escalation") or calc_derived.get("extrapolation_beyond_window"))
@@ -386,6 +414,8 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         confidence = 0.95 if (metrics and chunks) else (0.90 if metrics else 0.80)
         if conflicts:
             confidence = min(confidence, 0.90)
+        if dropped:
+            confidence = min(confidence, 0.75)
         escalated = False
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -395,6 +425,7 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
 
     return {
         "conflicts": conflicts,
+        "citations": validated_citation_dicts,
         "is_grounded": is_grounded,
         "confidence_score": confidence,
         "escalated": escalated,
@@ -602,11 +633,29 @@ def writer_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         logger.debug(f"Catalog upgrade check error: {e}")
 
     final_answer = "\n".join(parts)
+
+    # Validate grounding, excise unsupported claims, and prevent illegal averaging
+    permitted_reps = set(state.get("permitted_reports", [])) or {m.get("report_id") for m in metrics if m.get("report_id")}
+    raw_cits = [CitationItem(**c) if isinstance(c, dict) else c for c in state.get("citations", [])]
+    conflict_objs = [ConflictItem(**c) if isinstance(c, dict) else c for c in conflicts]
+
+    sanitized_answer, valid_citations, confidence, esc_req = CitationValidator.sanitize_and_revise_answer(
+        answer=final_answer,
+        citations=raw_cits,
+        permitted_reports=permitted_reps,
+        derived_values=derived,
+        metrics=metrics,
+        chunks=chunks,
+        conflicts=conflict_objs
+    )
+
     elapsed = (time.perf_counter() - t0) * 1000
-    logger.info(f"[WriterNode] Formatted grounded answer ({elapsed:.2f}ms)")
+    logger.info(f"[WriterNode] Formatted and validated grounded answer ({elapsed:.2f}ms)")
 
     return {
-        "final_answer": final_answer,
+        "final_answer": sanitized_answer,
+        "citations": [c.model_dump() for c in valid_citations] if valid_citations else state.get("citations", []),
+        "confidence_score": min(state.get("confidence_score", 0.90), confidence),
         "node_history": state.get("node_history", []) + ["writer"],
         "execution_latencies": {**state.get("execution_latencies", {}), "writer": elapsed}
     }
