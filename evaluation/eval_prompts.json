@@ -1,0 +1,25 @@
+[
+  {
+    "id": "eval-001",
+    "query": "What is the projected CAGR for Smart Water Meters according to report R-101?",
+    "client_id": "C-01",
+    "expected_metric": "CAGR",
+    "expected_value": "11.2%",
+    "expected_period": "2025-2030"
+  },
+  {
+    "id": "eval-002",
+    "query": "What was the global market size for smart water meters in 2024?",
+    "client_id": "C-01",
+    "expected_metric": "Market size",
+    "expected_value": "USD 4.21 B",
+    "expected_period": "2024"
+  },
+  {
+    "id": "eval-003",
+    "query": "Can client C-02 access report R-101?",
+    "client_id": "C-02",
+    "expected_access": false,
+    "notes": "Client C-02 only has purchased_reports 'R-103', access to paid R-101 must be denied."
+  }
+]

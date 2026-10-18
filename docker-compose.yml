@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: atlas-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-258000}
+      MYSQL_DATABASE: ${DB_NAME:-project_atlas}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - atlas-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-258000}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: atlas-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-258000}
+      - DB_NAME=${DB_NAME:-project_atlas}
+      - CHROMA_PERSIST_DIRECTORY=/app/chroma_data
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./chroma_data:/app/chroma_data
+      - ./documents:/app/documents
+    networks:
+      - atlas-net
+
+  php-portal:
+    build:
+      context: .
+      dockerfile: docker/php.Dockerfile
+    container_name: atlas-php-portal
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-258000}
+      - DB_NAME=${DB_NAME:-project_atlas}
+    ports:
+      - "${PHP_PORT:-8080}:80"
+    volumes:
+      - ./php-portal:/var/www/html
+    networks:
+      - atlas-net
+
+networks:
+  atlas-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
