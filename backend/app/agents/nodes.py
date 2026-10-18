@@ -52,11 +52,13 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         else:
             target_report_id = None
 
-    # 1. Check Unsafe / Adversarial Prompt Injections & DB Mutation
+    # 1. Check Unsafe / Adversarial Prompt Injections, DB Mutation, and Sensitive Data Leaks
     is_unsafe = any(ind in q_lower for ind in PROMPT_INJECTION_INDICATORS)
     if is_unsafe or any(k in q_lower for k in [
         "reveal all passwords", "dump database", "bypass permissions", "unmasked users",
-        "drop table", "truncate table", "delete from", "insert into", "update clients"
+        "drop table", "truncate table", "delete from", "insert into", "update clients",
+        "delete all rows", "delete all", "drop database", "modify database", "wipe database",
+        "client email", "client emails", "email addresses", "email address", "reveal email"
     ]):
         intent = "unsafe_unauthorized"
         reason = "Detected adversarial injection attempt or sensitive security breach query."
@@ -64,8 +66,9 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
     # 2. Check Out-of-Scope Requests (Politics, Personal Data, Other Clients' Purchases, Non-Research)
     elif any(k in q_lower for k in [
         # Politics
-        "presidential election", "who will win the election", "political election", "prime minister",
-        "politics", "political party", "vote for", "election outcome", "foreign policy", "president of",
+        "presidential election", "who will win the election", "who will win an election", "who will win",
+        "political election", "prime minister", "politics", "political party", "vote for", "election outcome",
+        "foreign policy", "president of", "election", "elections",
         # Personal Information
         "home address", "phone number", "personal email", "social security", "ssn",
         "personal salary", "passport number", "personal information", "ceo's address",
@@ -81,25 +84,28 @@ def router_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
         intent = "out_of_scope"
         reason = "Inquiry involves politics, personal private information, other clients' purchases, or non-research topics."
 
-    # 3. Check Comparison Queries or Multi-Report Choices
+    # 3. Check SQL Aggregate Queries
+    elif any(k in q_lower for k in [
+        "average cagr", "mean cagr", "avg cagr", "highest market size", "largest market size",
+        "how many metrics", "count of metrics", "total metrics", "metrics by region", "regional distribution",
+        "which sector", "what sector", "sector has the most", "sector with the most", "most reports",
+        "count of reports", "how many reports", "reports per sector", "breakdown by sector"
+    ]):
+        intent = "sql_aggregate"
+        reason = "Relational aggregate computation requested over MySQL metrics or reports."
+
+    # 4. Check Comparison Queries or Multi-Report Choices
     elif len(unique_reports) > 1 or any(k in q_lower for k in [
         "compare", "difference between", "versus", "vs", "contrast", "divergence",
-        "which", "choose", "pick", "resolve", "between r-"
+        "which report", "which one", "which should", "which to trust", "which figure",
+        "choose between", "pick between", "resolve between", "between r-"
     ]):
         intent = "comparison"
         reason = "Cross-report comparative evaluation or conflict resolution requested."
 
-    # 4. Check SQL Aggregate Queries
-    elif any(k in q_lower for k in [
-        "average cagr", "mean cagr", "avg cagr", "highest market size", "largest market size",
-        "how many metrics", "count of metrics", "total metrics", "metrics by region", "regional distribution"
-    ]):
-        intent = "sql_aggregate"
-        reason = "Relational aggregate computation requested over MySQL metrics."
-
     # 5. Check Calculation / Projection Queries
     elif any(k in q_lower for k in [
-        "project", "forecast", "projection", "calculate", "future size", "in 2028", "in 2029", "in 2030", "implied size"
+        "project", "forecast", "projection", "calculate", "future size", "in 2028", "in 2029", "in 2030", "in 2035", "implied size"
     ]):
         intent = "calculation_projection"
         reason = "Mathematical forecasting or implied market sizing calculation requested."
@@ -207,7 +213,7 @@ def retriever_node(state: AgentGraphState, config: Optional[RunnableConfig] = No
     # 1. Structured Metrics from MySQL
     catalog_keywords = [
         "water", "meter", "purifier", "gas", "flow", "amr", "ami", "smart meter", "smart water",
-        "utilities", "utility", "ultrasonic", "filtration"
+        "utilities", "utility", "ultrasonic", "filtration", "leak detection", "irrigation"
     ]
     has_catalog_relevance = bool(target_report_id) or any(kw in query.lower() for kw in catalog_keywords) or bool(re.search(r"\b(r-10[1-6])\b", query, re.I))
 

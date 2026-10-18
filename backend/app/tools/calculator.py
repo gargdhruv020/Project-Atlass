@@ -525,4 +525,19 @@ class MarketCalculator:
                 results["apac_market_size_calculated"] = reg_calc["formatted_result"]
                 results["apac_derivation_formula"] = reg_calc["derivation_formula"]
 
+            # If an APAC projection for target_year is requested, calculate the projected APAC size
+            if target_year and "apac" in query.lower():
+                for rep_id, data in reports_data.items():
+                    if data.get("base_size") and data.get("cagr_rate"):
+                        proj_key = f"projected_market_size_{rep_id}_{target_year}"
+                        proj_str = results.get(proj_key) or results.get(f"projected_market_size_{target_year}")
+                        if proj_str:
+                            m_val = re.search(r"(\d+\.?\d*)", str(proj_str))
+                            if m_val:
+                                glob_proj_val = float(m_val.group(1))
+                                apac_proj_val = round(glob_proj_val * (apac_share / 100.0), 2)
+                                results[f"apac_projected_market_size_{target_year}"] = f"{apac_proj_val:.2f} USD Billion"
+                                results[f"apac_projected_market_size_{target_year}_formula"] = f"{glob_proj_val:.2f} × ({apac_share:.1f}%)"
+                                break
+
         return results

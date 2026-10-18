@@ -212,8 +212,42 @@ class ReadOnlySQLTool:
         if "regional distribution" in q_lower or "metrics by region" in q_lower or "breakdown by region" in q_lower:
             return cls._metrics_by_region(db, permitted_reports)
 
-        # 5. General permitted report count & summary
+        # 5. Sector distribution / sector with the most reports
+        if "sector" in q_lower or "most reports" in q_lower or "industry" in q_lower or "vertical" in q_lower:
+            return cls._sector_report_counts(db, permitted_reports)
+
+        # 6. General permitted report count & summary
         return cls._permitted_summary(db, permitted_reports)
+
+    @classmethod
+    def _sector_report_counts(cls, db: Session, permitted_reports: Set[str]) -> Dict[str, Any]:
+        """Calculates report distribution across sectors and identifies the sector with the most reports."""
+        from collections import Counter
+        reps = db.query(Report).filter(Report.id.in_(permitted_reports)).all()
+        if not reps:
+            return {
+                "aggregation": "sector_report_counts",
+                "result": "No permitted reports found.",
+                "sample_size": 0
+            }
+
+        sector_counts: Counter[str] = Counter()
+        for r in reps:
+            sector_name = r.sector or "Unspecified"
+            sector_counts[sector_name] += 1
+
+        top_sector, top_count = sector_counts.most_common(1)[0]
+        breakdown_str = ", ".join(f"{s}: {c}" for s, c in sector_counts.items())
+        top_reps = [r.id for r in reps if (r.sector or "Unspecified") == top_sector]
+
+        return {
+            "aggregation": "sector_report_counts",
+            "top_sector": top_sector,
+            "top_sector_count": top_count,
+            "breakdown": dict(sector_counts),
+            "sources": top_reps,
+            "formatted_summary": f"The sector with the most reports among your permitted library is '{top_sector}' with {top_count} report(s) ({', '.join(top_reps)}). Full breakdown: {breakdown_str}."
+        }
 
     @classmethod
     def _avg_cagr(cls, db: Session, permitted_reports: Set[str]) -> Dict[str, Any]:
