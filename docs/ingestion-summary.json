@@ -1,0 +1,63 @@
+{
+  "total_reports_discovered": 6,
+  "total_reports_processed": 6,
+  "total_chunks_created": 6,
+  "processed_reports": [
+    {
+      "file_name": "R-101.md",
+      "report_id": "R-101",
+      "title": "Global Smart Water Meter Market 2025",
+      "chunks_count": 1,
+      "sector": "Utilities",
+      "region": "Global",
+      "year": "2025"
+    },
+    {
+      "file_name": "R-102.html",
+      "report_id": "R-102",
+      "title": "Smart Water Metering: Industry Outlook 2024",
+      "chunks_count": 1,
+      "sector": "Utilities",
+      "region": "Global",
+      "year": "2024"
+    },
+    {
+      "file_name": "R-103.md",
+      "report_id": "R-103",
+      "title": "Residential Water Purifier Market 2025",
+      "chunks_count": 1,
+      "sector": "Consumer Durables",
+      "region": "Global",
+      "year": "2025"
+    },
+    {
+      "file_name": "R-104_synthetic.md",
+      "report_id": "R-104",
+      "title": "[SYNTHETIC TEST DOCUMENT] Commercial HVAC Energy Efficiency Outlook 2025",
+      "chunks_count": 1,
+      "sector": "Building Infrastructure",
+      "region": "North America",
+      "year": "2025"
+    },
+    {
+      "file_name": "R-105_synthetic.html",
+      "report_id": "R-105",
+      "title": "[SYNTHETIC] Industrial IoT Grid Sensors Market 2026",
+      "chunks_count": 1,
+      "sector": "Industrial Automation",
+      "region": "Global",
+      "year": "2026"
+    },
+    {
+      "file_name": "R-106_synthetic.md",
+      "report_id": "R-106",
+      "title": "[SYNTHETIC TEST DOCUMENT] Smart Electric Vehicle Charging Infrastructure 2025",
+      "chunks_count": 1,
+      "sector": "Clean Energy & Transportation",
+      "region": "Europe",
+      "year": "2025"
+    }
+  ],
+  "missing_metadata_warnings": [],
+  "extraction_errors": []
+}

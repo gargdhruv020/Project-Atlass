@@ -6,7 +6,6 @@ Manages local persistent vector storage for unstructured market research reports
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from app.core.config import settings
-from app.ingestion.document_parser import DocumentChunk
 
 class ChromaStore:
     def __init__(self, persist_dir: Optional[str] = None, collection_name: Optional[str] = None):
@@ -30,12 +29,32 @@ class ChromaStore:
             self._collection = client.get_or_create_collection(name=self.collection_name)
         return self._collection
 
-    def add_documents(self, chunks: List[DocumentChunk]):
-        """Add document chunks to ChromaDB collection."""
+    def add_documents(self, chunks: List[Any]):
+        """
+        Add document chunks to ChromaDB collection using stable chunk identifiers.
+        """
         collection = self.get_collection()
-        ids = [f"{c.metadata.get('source', 'doc')}_{c.metadata.get('chunk_id', i)}" for i, c in enumerate(chunks)]
-        documents = [c.content for c in chunks]
-        metadatas = [c.metadata for c in chunks]
+        ids = []
+        documents = []
+        metadatas = []
+
+        for i, c in enumerate(chunks):
+            # Prefer stable chunk_id if present
+            chunk_id = getattr(c, "chunk_id", None)
+            if not chunk_id:
+                chunk_id = f"{c.metadata.get('report_id', 'doc')}_chunk_{i}"
+            
+            ids.append(chunk_id)
+            documents.append(c.content)
+            # Ensure all metadata values are primitive types (Chroma requirement)
+            clean_meta = {}
+            for k, v in getattr(c, "metadata", {}).items():
+                if isinstance(v, (str, int, float, bool)):
+                    clean_meta[k] = v
+                else:
+                    clean_meta[k] = str(v)
+            metadatas.append(clean_meta)
+
         collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
 
     def query_similar(self, query: str, n_results: int = 4) -> List[Dict[str, Any]]:

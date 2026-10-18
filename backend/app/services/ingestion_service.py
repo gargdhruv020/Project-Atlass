@@ -6,7 +6,7 @@ Orchestrates document parsing and local ChromaDB persistence.
 from pathlib import Path
 from typing import Optional, Dict, Any
 from app.core.config import settings
-from app.ingestion.document_parser import DocumentParser, DocumentChunk
+from app.ingestion.document_parser import DocumentParser, DocumentChunker, ExtractedPage
 from app.retrieval.vector_store import vector_store
 from app.observability.logger import logger
 
@@ -27,15 +27,13 @@ class IngestionService:
         if title:
             meta["title"] = title
 
-        parser = DocumentParser(chunk_size=400, chunk_overlap=40)
+        chunker = DocumentChunker(chunk_size=400, chunk_overlap=40)
         chunks = []
 
         if content and content.strip():
             logger.info(f"Ingesting raw text content for report '{report_id}'")
-            chunks = parser.chunk_text(
-                content,
-                metadata={"source": f"report_{report_id}", **meta}
-            )
+            pages = [ExtractedPage(page_number=1, text=content.strip())]
+            chunks = chunker.chunk_pages(pages, report_metadata=meta)
         elif file_path:
             target_path = Path(file_path)
             if not target_path.is_absolute():
@@ -45,9 +43,10 @@ class IngestionService:
                 raise FileNotFoundError(f"Document file not found at: {target_path}")
             
             logger.info(f"Ingesting file '{target_path.name}' for report '{report_id}'")
-            chunks = parser.parse_text_file(target_path)
-            for c in chunks:
-                c.metadata.update(meta)
+            pages, parsed_meta, _ = DocumentParser.parse_file(target_path)
+            # Merge parsed metadata with explicitly provided metadata
+            merged_meta = {**parsed_meta, **meta}
+            chunks = chunker.chunk_pages(pages, report_metadata=merged_meta)
         else:
             raise ValueError("Either 'content' or 'file_path' must be provided for ingestion.")
 
