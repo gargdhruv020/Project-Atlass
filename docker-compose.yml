@@ -64,6 +64,8 @@ services:
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-258000}
       - DB_NAME=${DB_NAME:-project_atlas}
+      - FASTAPI_BASE_URL=${FASTAPI_BASE_URL:-http://backend:8000}
+      - API_KEY=${API_KEY:-atlas-dev-key-2026}
     ports:
       - "${PHP_PORT:-8080}:80"
     volumes:

@@ -18,6 +18,7 @@ Project Atlas is an enterprise-grade AI-powered Market Research Report Copilot t
 
 Additional documentation:
 * System Integration Architecture: [`docs/system-integration.md`](docs/system-integration.md)
+* CodeIgniter 3 PHP Portal Integration: [`docs/php-portal-integration.md`](docs/php-portal-integration.md)
 * Architecture Overview: [`docs/architecture.md`](docs/architecture.md)
 * Analyst Escalation Workflow: [`docs/analyst-escalation-workflow.md`](docs/analyst-escalation-workflow.md)
 * Entitlement Authorization Flow: [`docs/entitlement-authorization-flow.md`](docs/entitlement-authorization-flow.md)
@@ -104,15 +105,24 @@ source .venv/bin/activate
 pip install -r backend/requirements.txt
 ```
 
-### 3.3 Exact Startup Command
-To start the FastAPI backend server:
+### 3.3 Exact Startup Commands
 
+#### 1. Start the FastAPI Backend Server:
 ```bash
 # Windows PowerShell / CMD:
 .venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 
 # Linux / macOS:
 uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
+```
+
+#### 2. Start the CodeIgniter 3 Legacy PHP Client Portal:
+```bash
+# Local PHP built-in server (accessible at http://127.0.0.1:8080):
+php -S 127.0.0.1:8080 -t php-portal
+
+# Or launch all services via Docker Compose:
+docker-compose up --build
 ```
 
 ---

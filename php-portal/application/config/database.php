@@ -9,7 +9,7 @@ $db['default'] = array(
     'hostname' => getenv('DB_HOST') ? getenv('DB_HOST') : '127.0.0.1',
     'port'     => getenv('DB_PORT') ? getenv('DB_PORT') : 3306,
     'username' => getenv('DB_USER') ? getenv('DB_USER') : 'root',
-    'password' => getenv('DB_PASSWORD') ? getenv('DB_PASSWORD') : '',
+    'password' => (getenv('DB_PASSWORD') !== false && getenv('DB_PASSWORD') !== '') ? getenv('DB_PASSWORD') : '258000',
     'database' => getenv('DB_NAME') ? getenv('DB_NAME') : 'project_atlas',
     'dbdriver' => 'mysqli',
     'dbprefix' => '',

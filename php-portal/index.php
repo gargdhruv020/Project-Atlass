@@ -1,7 +1,9 @@
 <?php
 /**
  * Project Atlas - CodeIgniter 3 Portal Entry Point
+ * Front controller routing web and AJAX requests to CodeIgniter 3 application controllers.
  */
+
 define('ENVIRONMENT', isset($_SERVER['CI_ENV']) ? $_SERVER['CI_ENV'] : 'development');
 
 switch (ENVIRONMENT) {
@@ -28,19 +30,60 @@ if (defined('STDIN')) {
     chdir(dirname(__FILE__));
 }
 
-define('SELF', pathinfo(__FILE__, PATHINFO_BASENAME));
-define('BASEPATH', str_replace('\\', '/', $system_path));
-define('FCPATH', dirname(__FILE__).'/');
-define('SYSDIR', basename(BASEPATH));
-define('APPPATH', $application_folder.'/');
-define('VIEWPATH', APPPATH.'views/');
+if (($_temp = realpath($system_path)) !== FALSE) {
+    $system_path = $_temp . DIRECTORY_SEPARATOR;
+} else {
+    $system_path = strtr(rtrim($system_path, '/\\'), '/\\', DIRECTORY_SEPARATOR . DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+}
 
-echo "<!DOCTYPE html><html><head><title>Project Atlas - Legacy Portal</title>";
-echo "<style>body{font-family:Arial,sans-serif;margin:40px;line-height:1.6;color:#333;background:#f8f9fa} .card{background:#fff;padding:24px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);max-width:800px;margin:auto} h1{color:#1a365d;margin-top:0} .badge{display:inline-block;padding:4px 8px;background:#e2e8f0;border-radius:4px;font-size:12px;font-weight:bold}</style></head><body>";
-echo "<div class='card'>";
-echo "<h1>Project Atlas &mdash; Client Portal</h1>";
-echo "<span class='badge'>CodeIgniter 3 Integration</span>";
-echo "<p>Welcome to the legacy client portal for Project Atlas. This interface connects to the <code>project_atlas</code> MySQL database and collaborates with the FastAPI AI Copilot backend.</p>";
-echo "<h3>Active Services</h3>";
-echo "<ul><li><strong>FastAPI Backend</strong>: <code>/api/v1</code></li><li><strong>MySQL Database</strong>: <code>project_atlas</code></li><li><strong>Vector Store</strong>: ChromaDB (Local Persistent)</li></ul>";
-echo "</div></body></html>";
+if (!is_dir($system_path)) {
+    header('HTTP/1.1 503 Service Unavailable.', TRUE, 503);
+    echo 'Your system folder path does not appear to be set correctly. Please open the following file and correct this: ' . pathinfo(__FILE__, PATHINFO_BASENAME);
+    exit(3);
+}
+
+define('SELF', pathinfo(__FILE__, PATHINFO_BASENAME));
+define('BASEPATH', $system_path);
+define('FCPATH', dirname(__FILE__) . DIRECTORY_SEPARATOR);
+define('SYSDIR', basename(BASEPATH));
+
+if (is_dir($application_folder)) {
+    if (($_temp = realpath($application_folder)) !== FALSE) {
+        $application_folder = $_temp;
+    } else {
+        $application_folder = strtr(rtrim($application_folder, '/\\'), '/\\', DIRECTORY_SEPARATOR . DIRECTORY_SEPARATOR);
+    }
+} elseif (is_dir(BASEPATH . $application_folder . DIRECTORY_SEPARATOR)) {
+    $application_folder = BASEPATH . strtr(trim($application_folder, '/\\'), '/\\', DIRECTORY_SEPARATOR . DIRECTORY_SEPARATOR);
+} else {
+    header('HTTP/1.1 503 Service Unavailable.', TRUE, 503);
+    echo 'Your application folder path does not appear to be set correctly.';
+    exit(3);
+}
+
+define('APPPATH', $application_folder . DIRECTORY_SEPARATOR);
+
+if (!isset($view_folder[0]) && is_dir(APPPATH . 'views' . DIRECTORY_SEPARATOR)) {
+    $view_folder = APPPATH . 'views';
+} elseif (is_dir($view_folder)) {
+    if (($_temp = realpath($view_folder)) !== FALSE) {
+        $view_folder = $_temp;
+    } else {
+        $view_folder = strtr(rtrim($view_folder, '/\\'), '/\\', DIRECTORY_SEPARATOR . DIRECTORY_SEPARATOR);
+    }
+} elseif (is_dir(APPPATH . $view_folder . DIRECTORY_SEPARATOR)) {
+    $view_folder = APPPATH . strtr(trim($view_folder, '/\\'), '/\\', DIRECTORY_SEPARATOR . DIRECTORY_SEPARATOR);
+} else {
+    header('HTTP/1.1 503 Service Unavailable.', TRUE, 503);
+    echo 'Your view folder path does not appear to be set correctly.';
+    exit(3);
+}
+
+define('VIEWPATH', $view_folder . DIRECTORY_SEPARATOR);
+
+/*
+ * --------------------------------------------------------------------
+ * LOAD THE BOOTSTRAP FILE
+ * --------------------------------------------------------------------
+ */
+require_once BASEPATH . 'core/CodeIgniter.php';
