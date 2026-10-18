@@ -1,0 +1,25 @@
+# Git & IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# Python Virtual Environments & Caches
+.venv
+venv
+ENV
+env
+__pycache__
+*.py[cod]
+*$py.class
+.pytest_cache
+
+# Local Runtime Data & Logs
+*.log
+chroma_data
+chroma_data/*
+.env
+
+# Temporary Files
+tmp/
+temp/

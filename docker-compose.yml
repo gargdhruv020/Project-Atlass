@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mysql:
     image: mysql:8.0
@@ -9,9 +7,14 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-258000}
       MYSQL_DATABASE: ${DB_NAME:-project_atlas}
     ports:
-      - "${DB_PORT:-3306}:3306"
+      # Map container port 3306 to host port 3307 by default to prevent conflict
+      # with any existing host MySQL development database on port 3306
+      - "${MYSQL_HOST_PORT:-3307}:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      # Isolated persistent volume for Docker review environment
+      - atlas-mysql-data:/var/lib/mysql
+      # Initialization script executed ONLY on first startup of a fresh volume
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
     networks:
       - atlas-net
     healthcheck:
@@ -19,6 +22,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   backend:
     build:
@@ -29,23 +33,38 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    env_file:
-      - .env
     environment:
       - DB_HOST=mysql
       - DB_PORT=3306
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-258000}
+      - DB_READONLY_USER=${DB_READONLY_USER:-atlas_readonly}
+      - DB_READONLY_PASSWORD=${DB_READONLY_PASSWORD:-AtlasReadOnly2026!}
       - DB_NAME=${DB_NAME:-project_atlas}
       - CHROMA_PERSIST_DIRECTORY=/app/chroma_data
+      - CHROMA_COLLECTION_NAME=${CHROMA_COLLECTION_NAME:-market_reports}
+      - API_KEY=${API_KEY:-atlas-dev-key-2026}
+      - SECRET_KEY=${SECRET_KEY:-atlas-insecure-secret-key-change-in-production}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-huggingface}
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - AUTO_INGEST_ON_STARTUP=${AUTO_INGEST_ON_STARTUP:-true}
+      - BACKEND_HOST=0.0.0.0
+      - BACKEND_PORT=8000
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./backend:/app/backend
-      - ./chroma_data:/app/chroma_data
-      - ./documents:/app/documents
+      # Persistent vector database volume
+      - atlas-chroma-data:/app/chroma_data
+      # Read-only sample documents
+      - ./documents:/app/documents:ro
     networks:
       - atlas-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   php-portal:
     build:
@@ -56,26 +75,34 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    env_file:
-      - .env
+      backend:
+        condition: service_healthy
     environment:
       - DB_HOST=mysql
       - DB_PORT=3306
       - DB_USER=${DB_USER:-root}
       - DB_PASSWORD=${DB_PASSWORD:-258000}
       - DB_NAME=${DB_NAME:-project_atlas}
-      - FASTAPI_BASE_URL=${FASTAPI_BASE_URL:-http://backend:8000}
+      - FASTAPI_BASE_URL=http://backend:8000
       - API_KEY=${API_KEY:-atlas-dev-key-2026}
     ports:
       - "${PHP_PORT:-8080}:80"
-    volumes:
-      - ./php-portal:/var/www/html
     networks:
       - atlas-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 networks:
   atlas-net:
+    name: atlas-net
     driver: bridge
 
 volumes:
-  mysql_data:
+  atlas-mysql-data:
+    name: atlas-mysql-data
+  atlas-chroma-data:
+    name: atlas-chroma-data
