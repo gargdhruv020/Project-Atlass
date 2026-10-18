@@ -312,8 +312,13 @@ def calculator_node(state: AgentGraphState, config: Optional[RunnableConfig] = N
     t0 = time.perf_counter()
     query = state.get("query", "")
     metrics = state.get("retrieved_metrics", [])
+    target_report_id = state.get("target_report_id")
 
-    calc_results = MarketCalculator.evaluate_projection_query(query=query, metrics=metrics)
+    calc_results = MarketCalculator.evaluate_projection_query(
+        query=query,
+        metrics=metrics,
+        target_report_id=target_report_id
+    )
 
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info(f"[CalculatorNode] Derived {len(calc_results)} value(s) ({elapsed:.2f}ms)")
@@ -362,9 +367,15 @@ def critic_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
 
     # 3. Grounding Assessment
     has_evidence = bool(metrics or chunks or sql_agg)
+    calc_derived = state.get("derived_values", {})
+    calc_escalation = bool(calc_derived.get("requires_escalation") or calc_derived.get("extrapolation_beyond_window"))
     if user_wants_escalation:
         is_grounded = False
         confidence = 0.50
+        escalated = True
+    elif calc_escalation:
+        is_grounded = False
+        confidence = 0.30
         escalated = True
     elif not has_evidence:
         is_grounded = False
@@ -445,6 +456,15 @@ def escalation_node(state: AgentGraphState, config: Optional[RunnableConfig] = N
     elif any(k in query.lower() for k in ["escalate", "human analyst", "talk to human"]):
         reason = "Explicit user request for human analyst intervention"
         answer = "Your request has been routed to a senior market research analyst for human review."
+    elif state.get("derived_values", {}).get("requires_escalation"):
+        derived = state.get("derived_values", {})
+        reason = derived.get("escalation_reason", "Projection request extends beyond verified research forecast window")
+        refusal_msg = derived.get("refusal_reason", reason)
+        answer = (
+            f"Projection Notice: {refusal_msg}\n\n"
+            f"Project Atlas strictly prohibits silent extrapolation beyond published market research forecast windows. "
+            f"An analyst escalation ticket has been created for custom econometric modeling."
+        )
     else:
         reason = "No matching research evidence found in client's entitled reports"
         answer = (
@@ -538,8 +558,16 @@ def writer_node(state: AgentGraphState, config: Optional[RunnableConfig] = None)
     # 4. Derived Values / Projections
     if derived:
         parts.append("\n**Derived Insights (Calculated Estimates):**")
+        if derived.get("extrapolation_refused"):
+            parts.append(f"- **Extrapolation Notice**: {derived.get('refusal_reason')}")
+        if derived.get("scope_comparison"):
+            parts.append(f"- **Scope Disambiguation**: {derived.get('scope_comparison')}")
         for k, v in derived.items():
-            if not k.endswith("_formula"):
+            if not k.endswith("_formula") and k not in (
+                "extrapolation_refused", "extrapolation_beyond_window", "refusal_reason",
+                "requires_escalation", "escalation_reason", "scope_comparison", "target_year_missing",
+                "ambiguity_notice"
+            ):
                 label = k.replace("_", " ").title()
                 formula_str = f" *(Formula: {derived.get(f'{k}_formula', '')})*" if f"{k}_formula" in derived else ""
                 parts.append(f"- **{label}**: `{v}`{formula_str}")
