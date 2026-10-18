@@ -116,10 +116,16 @@ class ChatService:
                 seen_tuples.add(tup)
                 unique_metrics.append(m)
 
-        # 5. Semantic Vector Retrieval from ChromaDB
+        # 5. Semantic Vector Retrieval from ChromaDB with strict MySQL entitlement verification
         vector_results = []
         try:
-            vector_results = VectorTool.search_unstructured_content(query, n_results=2)
+            from app.retrieval.vector_store import vector_store_service
+            vector_results = vector_store_service.entitled_similarity_search(
+                db=db,
+                client_id=client_id,
+                query=query,
+                n_results=2
+            )
         except Exception as e:
             logger.warning(f"Vector retrieval skipped: {e}")
 

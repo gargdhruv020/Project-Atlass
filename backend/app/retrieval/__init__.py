@@ -1,3 +1,10 @@
-from .vector_store import ChromaStore, vector_store
+from .vector_store import VectorStoreService, vector_store_service, vector_store
+from .embedding_provider import LocalOllamaEmbeddingFunction, ollama_embedding_function
 
-__all__ = ["ChromaStore", "vector_store"]
+__all__ = [
+    "VectorStoreService",
+    "vector_store_service",
+    "vector_store",
+    "LocalOllamaEmbeddingFunction",
+    "ollama_embedding_function"
+]

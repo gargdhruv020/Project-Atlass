@@ -42,7 +42,20 @@ class Settings(BaseSettings):
         default=str(BASE_DIR / "chroma_data"),
         alias="CHROMA_PERSIST_DIRECTORY"
     )
-    CHROMA_COLLECTION_NAME: str = "market_reports"
+    CHROMA_COLLECTION_NAME: str = Field(
+        default="market_reports",
+        alias="CHROMA_COLLECTION_NAME"
+    )
+
+    # Embedding Settings (Local Ollama)
+    OLLAMA_BASE_URL: str = Field(
+        default="http://localhost:11434",
+        alias="OLLAMA_BASE_URL"
+    )
+    OLLAMA_MODEL: str = Field(
+        default="nomic-embed-text",
+        alias="OLLAMA_MODEL"
+    )
 
     # Documents & Ingestion
     DOCUMENTS_DIR: str = Field(
