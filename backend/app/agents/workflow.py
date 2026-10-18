@@ -1,159 +1,181 @@
 """
-LangGraph Agent Workflow
-Orchestrates client permission checks, SQL metric retrieval, ChromaDB vector search,
-and synthesized report generation for the Market Research Copilot.
+Project Atlas LangGraph Agent Workflow
+Orchestrates:
+1. Router: Intent classification (factual, comparison, calculation, sql_aggregate, out_of_scope, unsafe).
+2. Entitlement Checker: Authoritative MySQL client permission validation.
+3. Retriever: ChromaDB vector search + MySQL structured metric retrieval with strict hard verification.
+4. Read-Only SQL Tool: Safe parameterized aggregations over permitted data.
+5. Calculator: Deterministic CAGR future projections and regional share sizing.
+6. Critic / Fact-Checker: Grounding audit, citation validation, conflict analysis, and confidence scoring.
+7. Escalation Handler: Creation of analyst escalation ticket in MySQL without leaking protected data.
+8. Writer: Synthesis of grounded structured ChatResponse.
 """
 
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
+from langgraph.graph import StateGraph, END
 
-from app.tools.db_tool import DatabaseTool
-from app.tools.vector_tool import VectorTool
+from app.agents.state import AgentGraphState
+from app.agents.nodes import (
+    router_node,
+    entitlement_checker_node,
+    retriever_node,
+    read_only_sql_node,
+    calculator_node,
+    critic_node,
+    escalation_node,
+    writer_node,
+    route_after_router,
+    route_after_entitlements,
+    route_after_retriever,
+    route_after_critic
+)
+from app.schemas.chat import ChatResponse, CitationItem, ConflictItem
 from app.observability.logger import logger
 
-class AgentState(TypedDict):
-    query: str
-    client_id: Optional[str]
-    report_id: Optional[str]
-    access_granted: bool
-    access_message: str
-    metrics: List[Dict[str, Any]]
-    unstructured_docs: List[Dict[str, Any]]
-    citations: List[Dict[str, Any]]
-    final_answer: str
 
-def check_permissions_node(state: AgentState, db: Session) -> Dict[str, Any]:
-    """Node: Validate client permissions against relational MySQL database."""
-    client_id = state.get("client_id")
-    report_id = state.get("report_id")
+def build_copilot_graph() -> Any:
+    """Builds and compiles the StateGraph for Project Atlas Copilot Agent."""
+    workflow = StateGraph(AgentGraphState)
 
-    logger.info(f"[Agent] Checking permissions for client='{client_id}', report='{report_id}'")
+    # 1. Register all 8 workflow nodes
+    workflow.add_node("router", router_node)
+    workflow.add_node("entitlement_checker", entitlement_checker_node)
+    workflow.add_node("retriever", retriever_node)
+    workflow.add_node("read_only_sql", read_only_sql_node)
+    workflow.add_node("calculator", calculator_node)
+    workflow.add_node("critic", critic_node)
+    workflow.add_node("escalation", escalation_node)
+    workflow.add_node("writer", writer_node)
 
-    if not client_id or not report_id:
-        # Default open if not restricted to a specific private report
-        return {"access_granted": True, "access_message": "Open query / no client restriction"}
+    # 2. Set Entrypoint
+    workflow.set_entry_point("router")
 
-    res = DatabaseTool.check_client_access(db=db, client_id=client_id, report_id=report_id)
-    return {
-        "access_granted": res["has_access"],
-        "access_message": res["reason"]
-    }
-
-def retrieve_data_node(state: AgentState, db: Session) -> Dict[str, Any]:
-    """Node: Query relational metrics and semantic vector content."""
-    if not state.get("access_granted", True):
-        logger.warning(f"[Agent] Access denied. Skipping retrieval.")
-        return {"metrics": [], "unstructured_docs": [], "citations": []}
-
-    query = state.get("query", "")
-    report_id = state.get("report_id")
-
-    logger.info(f"[Agent] Retrieving structured metrics from MySQL for query: {query}")
-    
-    # Simple keyword extraction for metric query
-    metric_filter = None
-    for keyword in ["cagr", "market size", "revenue", "volume", "share", "forecast"]:
-        if keyword in query.lower():
-            metric_filter = keyword
-            break
-
-    metrics = DatabaseTool.query_metrics(
-        db=db,
-        report_id=report_id,
-        metric=metric_filter
+    # 3. Add Conditional Transitions
+    workflow.add_conditional_edges(
+        "router",
+        route_after_router,
+        {
+            "escalation": "escalation",
+            "entitlement_checker": "entitlement_checker"
+        }
     )
 
-    logger.info(f"[Agent] Retrieving vector documents from ChromaDB for query: {query}")
-    vector_results = VectorTool.search_unstructured_content(query=query, n_results=2)
-
-    citations = []
-    for m in metrics:
-        citations.append({
-            "report_id": m.get("report_id"),
-            "metric": m.get("metric"),
-            "period": m.get("period"),
-            "region": m.get("region"),
-            "value": m.get("value"),
-            "source_type": "relational_sql"
-        })
-
-    for v in vector_results:
-        citations.append({
-            "source": v.get("source"),
-            "content_preview": v.get("content", "")[:120],
-            "source_type": "vector_retrieval"
-        })
-
-    return {
-        "metrics": metrics,
-        "unstructured_docs": vector_results,
-        "citations": citations
-    }
-
-def synthesize_answer_node(state: AgentState) -> Dict[str, Any]:
-    """Node: Synthesize grounded response using retrieved metrics and citations."""
-    if not state.get("access_granted", True):
-        return {
-            "final_answer": f"Access Denied: {state.get('access_message')}. Please contact your administrator to purchase access."
+    workflow.add_conditional_edges(
+        "entitlement_checker",
+        route_after_entitlements,
+        {
+            "escalation": "escalation",
+            "read_only_sql": "read_only_sql",
+            "retriever": "retriever"
         }
-
-    metrics = state.get("metrics", [])
-    query = state.get("query", "")
-    citations = state.get("citations", [])
-
-    if not metrics and not state.get("unstructured_docs"):
-        return {
-            "final_answer": f"No market research data found matching query: '{query}'. Try searching for metrics such as 'Market size' or 'CAGR'."
-        }
-
-    # Format synthesized findings
-    findings = []
-    for m in metrics[:5]:
-        findings.append(
-            f"- **{m.get('metric')}** ({m.get('region')}, {m.get('period')}): **{m.get('value')}** "
-            f"[Report: {m.get('report_id')}] - {m.get('scope_note') or ''}"
-        )
-
-    summary = (
-        f"### Market Research Findings for '{query}':\n\n"
-        + "\n".join(findings)
-        + f"\n\n*Verified from {len(citations)} source record(s) in Project Atlas.*"
     )
 
-    return {"final_answer": summary}
+    workflow.add_conditional_edges(
+        "retriever",
+        route_after_retriever,
+        {
+            "calculator": "calculator",
+            "critic": "critic"
+        }
+    )
+
+    workflow.add_edge("read_only_sql", "critic")
+    workflow.add_edge("calculator", "critic")
+
+    workflow.add_conditional_edges(
+        "critic",
+        route_after_critic,
+        {
+            "escalation": "escalation",
+            "writer": "writer"
+        }
+    )
+
+    workflow.add_edge("escalation", "writer")
+    workflow.add_edge("writer", END)
+
+    return workflow.compile()
+
+
+# Compile Singleton Agent Graph
+copilot_agent_graph = build_copilot_graph()
+
 
 def run_copilot_workflow(
     db: Session,
     query: str,
-    client_id: Optional[str] = None,
+    client_id: str,
+    conversation_id: Optional[str] = None,
     report_id: Optional[str] = None
-) -> Dict[str, Any]:
+) -> ChatResponse:
     """
-    Executes the multi-step Copilot graph workflow.
-    Uses LangGraph if available, with built-in sequential state executor.
+    Executes the compiled LangGraph workflow end-to-end and returns a structured ChatResponse.
     """
-    initial_state: AgentState = {
+    logger.info(f"[LangGraph] Initiating agent workflow for client='{client_id}', query='{query[:60]}...'")
+
+    initial_state: AgentGraphState = {
         "query": query,
         "client_id": client_id,
-        "report_id": report_id,
-        "access_granted": True,
-        "access_message": "",
-        "metrics": [],
-        "unstructured_docs": [],
+        "conversation_id": conversation_id,
+        "target_report_id": report_id,
+        "is_authenticated": True,
+        "is_authorized": True,
+        "permitted_reports": [],
+        "retrieved_metrics": [],
+        "retrieved_chunks": [],
+        "sql_aggregate_results": None,
+        "derived_values": {},
+        "conflicts": [],
+        "critic_notes": [],
         "citations": [],
-        "final_answer": ""
+        "final_answer": "",
+        "escalated": False,
+        "confidence_score": 0.0,
+        "node_history": [],
+        "execution_latencies": {},
+        "token_usage": {"prompt_tokens": len(query.split()) * 2, "completion_tokens": 0},
+        "retry_count": 0,
+        "error": None
     }
 
-    # Step 1: Permission check
-    perm_updates = check_permissions_node(initial_state, db)
-    initial_state.update(perm_updates)
+    config = {"configurable": {"db": db}}
 
-    # Step 2: Data retrieval
-    retrieval_updates = retrieve_data_node(initial_state, db)
-    initial_state.update(retrieval_updates)
+    # Execute graph with state propagation
+    final_state: AgentGraphState = copilot_agent_graph.invoke(initial_state, config=config)
 
-    # Step 3: Synthesis
-    synth_updates = synthesize_answer_node(initial_state)
-    initial_state.update(synth_updates)
+    # Convert citations to Pydantic CitationItem
+    pydantic_citations: List[CitationItem] = []
+    for c in final_state.get("citations", []):
+        pydantic_citations.append(CitationItem(
+            report_id=c.get("report_id"),
+            title=c.get("title"),
+            metric=c.get("metric"),
+            period=c.get("period"),
+            region=c.get("region"),
+            value=c.get("value"),
+            page=c.get("page"),
+            source_type=c.get("source_type", "relational_sql"),
+            text_snippet=c.get("text_snippet")
+        ))
 
-    return initial_state
+    # Convert conflicts to Pydantic ConflictItem
+    pydantic_conflicts: List[ConflictItem] = []
+    for cf in final_state.get("conflicts", []):
+        pydantic_conflicts.append(ConflictItem(
+            metric=cf.get("metric", "Methodological Conflict"),
+            description=cf.get("description", ""),
+            sources=cf.get("sources", [])
+        ))
+
+    return ChatResponse(
+        answer=final_state.get("final_answer", ""),
+        citations=pydantic_citations,
+        confidence=float(final_state.get("confidence_score", 0.0)),
+        conflicts=pydantic_conflicts,
+        derived_values=final_state.get("derived_values", {}),
+        escalated=bool(final_state.get("escalated", False)),
+        client_id=client_id,
+        conversation_id=conversation_id,
+        escalation_ticket=final_state.get("escalation_ticket_id")
+    )

@@ -82,3 +82,54 @@ flowchart TD
 - **Git Exclusions**: Local databases, vector index caches (`chroma_data/*`), temporary documents, and `.env` files are ignored in `.gitignore`.
 - **Data Protection**: Client contact emails and sensitive authentication credentials are automatically masked before being surfaced in API responses or logs.
 - **Read-Only Guarantees**: Introspection and Copilot retrieval operations execute read-only queries, preserving database integrity.
+
+---
+
+## 5. LangGraph Agent Workflow Architecture
+
+Project Atlas utilizes **LangGraph** (`langgraph.graph.StateGraph`) to orchestrate a strongly typed, deterministic agent workflow. The agent coordinates 8 specialized nodes with explicit state transitions, conditional branching, failure handling, and multi-layer entitlement security.
+
+### 5.1 Workflow State Diagram
+
+```mermaid
+flowchart TD
+    Start([User Request]) --> RouterNode["1. Router Node\n(Intent Classification)"]
+    
+    RouterNode -->|factual / comparison / calc / sql| EntitlementsNode["2. Entitlement Checker Node\n(Authoritative MySQL Validation)"]
+    RouterNode -->|unsafe_unauthorized / out_of_scope| EscalationNode["7. Escalation Handler Node\n(MySQL Ticket + Safe Notice)"]
+    
+    EntitlementsNode -->|Access Authorized\nIntent == sql_aggregate| SQLToolNode["4. Read-Only SQL Tool Node\n(Restricted Parameterized Aggregates)"]
+    EntitlementsNode -->|Access Authorized\nFactual / Comparison / Calc| RetrieverNode["3. Retriever Node\n(ChromaDB + MySQL with Independent Gate)"]
+    EntitlementsNode -->|Access Denied / Unauthenticated| EscalationNode
+    
+    RetrieverNode -->|Intent == calculation_projection| CalculatorNode["5. Calculator Node\n(Deterministic CAGR & Regional Share)"]
+    RetrieverNode -->|Factual / Comparison| CriticNode["6. Critic / Fact-Checker Node\n(Conflict Detection, Grounding, Citations)"]
+    
+    SQLToolNode --> CriticNode
+    CalculatorNode --> CriticNode
+    
+    CriticNode -->|Grounded Evidence Available| WriterNode["8. Writer Node\n(Grounded ChatResponse Synthesis)"]
+    CriticNode -->|Missing Evidence / Low Confidence / Explicit Escalation| EscalationNode
+    
+    EscalationNode --> WriterNode
+    WriterNode --> EndNode([Structured API Response])
+```
+
+### 5.2 The 8 Workflow Components
+
+| Node | Component | Responsibility & Safety Measures |
+| :--- | :--- | :--- |
+| `router` | **Router** | Classifies query into 1 of 6 intents: `factual_lookup`, `comparison`, `calculation_projection`, `sql_aggregate`, `out_of_scope`, `unsafe_unauthorized`. Extracts target report IDs. |
+| `entitlement_checker` | **Entitlement Checker** | Queries MySQL `clients` and `reports`. Verifies client authentication and computes permitted report scope. Pre-checks target report permissions before retrieval. |
+| `retriever` | **Retriever** | Retrieves ChromaDB chunks and MySQL structured metrics. **Hard Python Gate**: Re-verifies every chunk against MySQL permissions, purging unauthorized chunks before LLM context. |
+| `read_only_sql` | **Read-Only SQL Tool** | Executes safe aggregate computations (e.g. `AVG(CAGR)`, `COUNT`, `MAX`) strictly over permitted reports. Rejects all mutation/DDL keywords (`DROP`, `INSERT`, `UPDATE`, `DELETE`). |
+| `calculator` | **Calculator** | Deterministic mathematical calculations: CAGR future projections ($V_{\text{future}} = V_{\text{base}} \times (1 + r)^{\Delta t}$) and regional sizing without floating-point estimation. |
+| `critic` | **Critic / Fact-Checker** | Analyzes methodological divergences across reports (e.g. R-101 vs R-102 scopes), validates citation grounding, flags ungrounded claims, and calibrates confidence score. |
+| `escalation` | **Escalation Handler** | Creates an analyst ticket in MySQL `escalations` table for access denials, ungrounded inquiries, or unsafe requests **without logging protected report text**. |
+| `writer` | **Writer** | Packages final grounded answer, citations, derived formulas, conflict explanations, and safe catalog upgrade offers into the standard Pydantic `ChatResponse`. |
+
+### 5.3 Failure & Loop Protection
+- **No Backward Loops**: The state transition graph is strictly forward-directed, mathematically preventing infinite loops.
+- **Tool Fallbacks**: If external LLM or database queries encounter timeouts or disconnects, nodes fail gracefully into deterministic grounded synthesis.
+- **Untrusted Document Boundary**: Retrieved text is isolated within `<untrusted_document_evidence>` XML tags with strict system directives ignoring embedded commands.
+
