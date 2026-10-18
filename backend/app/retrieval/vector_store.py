@@ -131,7 +131,9 @@ class VectorStoreService:
         db: Session,
         client_id: str,
         query: str,
-        n_results: int = 4
+        n_results: int = 4,
+        report_id: Optional[str] = None,
+        similarity_threshold: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         """
         Security Enforcement Boundary:
@@ -153,8 +155,11 @@ class VectorStoreService:
         public_reports = [r.id for r in db.query(Report).filter(Report.access == "public").all()]
         allowed_reports = set(purchased_reports + public_reports)
 
+        if report_id:
+            allowed_reports = allowed_reports.intersection({report_id})
+
         if not allowed_reports:
-            logger.info(f"Client '{client_id}' has zero entitled reports.")
+            logger.info(f"Client '{client_id}' has zero entitled reports for query scope.")
             return []
 
         # 2. ChromaDB metadata filter layer
@@ -166,18 +171,29 @@ class VectorStoreService:
 
         raw_candidates = self.similarity_search(query=query, n_results=n_results, where=where_filter)
 
-        # 3. Independent second-layer verification against MySQL
+        # 3. Independent second-layer verification against MySQL and similarity threshold check
         verified_results = []
         for item in raw_candidates:
-            report_id = item["metadata"].get("report_id")
-            has_access, reason = ClientService.check_report_access(db, client_id, report_id)
-            if has_access:
-                verified_results.append(item)
-            else:
+            item_report_id = item["metadata"].get("report_id")
+            has_access, reason = ClientService.check_report_access(db, client_id, item_report_id)
+            if not has_access:
                 logger.error(
-                    f"SECURITY ALERT: Blocked unentitled chunk from report '{report_id}' "
+                    f"SECURITY ALERT: Blocked unentitled chunk from report '{item_report_id}' "
                     f"for client '{client_id}' despite vector search match."
                 )
+                continue
+
+            # Check similarity threshold if specified
+            if similarity_threshold is not None:
+                dist = item.get("distance", 0.0)
+                if dist > similarity_threshold:
+                    logger.debug(
+                        f"Chunk {item.get('chunk_id')} filtered out by similarity threshold "
+                        f"({dist:.4f} > {similarity_threshold:.4f})"
+                    )
+                    continue
+
+            verified_results.append(item)
 
         return verified_results
 

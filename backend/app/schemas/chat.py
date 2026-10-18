@@ -34,6 +34,7 @@ class CitationItem(BaseModel):
     period: Optional[str] = None
     region: Optional[str] = None
     value: Optional[str] = None
+    page: Optional[int] = None
     source_type: str = Field(default="relational_sql", description="relational_sql or vector_retrieval")
     text_snippet: Optional[str] = None
 

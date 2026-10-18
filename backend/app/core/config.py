@@ -5,6 +5,7 @@ Loads settings from environment variables and .env file.
 
 import os
 from pathlib import Path
+from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -55,6 +56,38 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = Field(
         default="nomic-embed-text",
         alias="OLLAMA_MODEL"
+    )
+
+    # LLM Settings
+    LLM_PROVIDER: str = Field(
+        default="ollama",
+        alias="LLM_PROVIDER"
+    )
+    LLM_MODEL: str = Field(
+        default="llama3.2",
+        alias="LLM_MODEL"
+    )
+    LLM_API_BASE: str = Field(
+        default="http://localhost:11434",
+        alias="LLM_API_BASE"
+    )
+    LLM_API_KEY: Optional[str] = Field(
+        default=None,
+        alias="LLM_API_KEY"
+    )
+    LLM_TEMPERATURE: float = Field(
+        default=0.0,
+        alias="LLM_TEMPERATURE"
+    )
+
+    # RAG Retrieval Settings
+    RAG_SIMILARITY_THRESHOLD: float = Field(
+        default=0.60,
+        alias="RAG_SIMILARITY_THRESHOLD"
+    )
+    RAG_TOP_K: int = Field(
+        default=4,
+        alias="RAG_TOP_K"
     )
 
     # Documents & Ingestion
