@@ -21,6 +21,7 @@ from app.api.v1.endpoints.chat import router as chat_router
 from app.api.v1.endpoints.ingest import router as ingest_router
 from app.api.v1.endpoints.escalations import router as escalations_router
 from app.api.v1.endpoints.health import router as health_router
+from app.api.v1.endpoints.conversations import router as conversations_router
 from app.observability.logger import logger
 
 class RequestTimeoutMiddleware(BaseHTTPMiddleware):
@@ -111,11 +112,12 @@ async def generic_exception_handler(request: Request, exc: Exception):
         content={"detail": "Internal server error occurred while processing request."}
     )
 
-# Mount primary endpoints at root level (/chat, /ingest, /escalations, /health)
+# Mount primary endpoints at root level (/chat, /ingest, /escalations, /health, /conversations, /feedback)
 app.include_router(chat_router)
 app.include_router(ingest_router)
 app.include_router(escalations_router)
 app.include_router(health_router)
+app.include_router(conversations_router)
 
 # Mount versioned API routes (/api/v1/...)
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -132,7 +134,9 @@ def root():
             "chat": "POST /chat",
             "ingest": "POST /ingest",
             "escalations": "GET /escalations",
-            "health": "GET /health"
+            "health": "GET /health",
+            "conversations": "GET /conversations",
+            "feedback": "POST /feedback"
         },
         "api_v1": settings.API_V1_STR,
         "status": "operational"

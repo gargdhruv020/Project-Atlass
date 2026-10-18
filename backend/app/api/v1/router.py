@@ -10,6 +10,7 @@ from app.api.v1.endpoints.escalations import router as escalations_router
 from app.api.v1.endpoints.health import router as health_router
 from app.api.v1.endpoints.reports import router as reports_router
 from app.api.v1.endpoints.clients import router as clients_router
+from app.api.v1.endpoints.conversations import router as conversations_router
 
 api_router = APIRouter()
 api_router.include_router(chat_router)
@@ -18,3 +19,4 @@ api_router.include_router(escalations_router)
 api_router.include_router(health_router)
 api_router.include_router(reports_router)
 api_router.include_router(clients_router)
+api_router.include_router(conversations_router)

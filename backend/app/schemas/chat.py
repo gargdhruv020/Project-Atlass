@@ -78,4 +78,5 @@ class ChatResponse(BaseModel):
     escalated: bool = False
     client_id: str
     conversation_id: Optional[str] = None
+    message_id: Optional[int] = None
     escalation_ticket: Optional[str] = None
