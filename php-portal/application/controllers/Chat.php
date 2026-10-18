@@ -50,9 +50,12 @@ class Chat extends CI_Controller {
         $health_info = $this->fastapi_client->get_health();
 
         $data = array(
+            'page_title'             => 'Report Copilot | Project Atlas',
             'client'                 => $client,
             'client_id'              => $client_id,
+            'default_client'         => $client_id,
             'all_clients'            => $all_clients,
+            'clients'                => $all_clients,
             'active_conversation_id' => $active_conversation_id,
             'conversation'           => $conversation,
             'conversations'          => $conversations,
@@ -102,7 +105,8 @@ class Chat extends CI_Controller {
         }
 
         # Validate question input
-        $question = trim($this->input->post('question', TRUE));
+        $raw_q = $this->input->post('question', TRUE);
+        $question = ($raw_q !== null) ? trim((string)$raw_q) : '';
         if (empty($question)) {
             $this->_json_response(array(
                 'success'    => false,
@@ -122,7 +126,8 @@ class Chat extends CI_Controller {
         }
 
         # Resolve conversation scope
-        $conversation_id = trim($this->input->post('conversation_id', TRUE));
+        $raw_conv = $this->input->post('conversation_id', TRUE);
+        $conversation_id = ($raw_conv !== null && trim((string)$raw_conv) !== '') ? trim((string)$raw_conv) : null;
         $conversation = $this->chat_model->get_or_create_conversation($conversation_id, $client_id, mb_substr($question, 0, 45));
         $active_conv_id = $conversation['id'];
 
@@ -130,7 +135,8 @@ class Chat extends CI_Controller {
         $user_msg_id = $this->chat_model->save_message($active_conv_id, $client_id, 'user', $question);
 
         # Invoke FastAPI backend via reusable client library
-        $report_id = trim($this->input->post('report_id', TRUE)) ?: null;
+        $raw_rep = $this->input->post('report_id', TRUE);
+        $report_id = ($raw_rep !== null && trim((string)$raw_rep) !== '') ? trim((string)$raw_rep) : null;
         $api_result = $this->fastapi_client->post_chat($client_id, $question, $active_conv_id, $report_id);
 
         if ($api_result['success']) {
@@ -217,9 +223,12 @@ class Chat extends CI_Controller {
 
         $client_id = $this->_get_authenticated_client_id();
         $message_id = intval($this->input->post('message_id', TRUE));
-        $conversation_id = trim($this->input->post('conversation_id', TRUE));
-        $rating = trim($this->input->post('rating', TRUE));
-        $comment = trim($this->input->post('comment', TRUE)) ?: null;
+        $raw_c = $this->input->post('conversation_id', TRUE);
+        $conversation_id = ($raw_c !== null) ? trim((string)$raw_c) : '';
+        $raw_r = $this->input->post('rating', TRUE);
+        $rating = ($raw_r !== null) ? trim((string)$raw_r) : '';
+        $raw_comm = $this->input->post('comment', TRUE);
+        $comment = ($raw_comm !== null && trim((string)$raw_comm) !== '') ? trim((string)$raw_comm) : null;
 
         if (!$message_id || !in_array($rating, array('thumbs_up', 'thumbs_down'))) {
             $this->_json_response(array(
@@ -258,7 +267,8 @@ class Chat extends CI_Controller {
             return;
         }
 
-        $target_client_id = trim($this->input->post('client_id', TRUE));
+        $raw_tc = $this->input->post('client_id', TRUE);
+        $target_client_id = ($raw_tc !== null) ? trim((string)$raw_tc) : '';
         $client = $this->chat_model->get_client($target_client_id);
 
         if ($client) {
@@ -278,13 +288,27 @@ class Chat extends CI_Controller {
     }
 
     /**
-     * Get Authenticated Client ID from Session
+     * Alias for send() for frontend compatibility
+     */
+    public function ask() {
+        return $this->send();
+    }
+
+    /**
+     * Get Authenticated Client ID (verifies post param or session)
      *
      * @return string
      */
     protected function _get_authenticated_client_id() {
+        $raw_p = $this->input->post('client_id', TRUE);
+        $post_id = ($raw_p !== null) ? trim((string)$raw_p) : '';
+        if (!empty($post_id) && $this->chat_model->get_client($post_id)) {
+            $this->session->set_userdata('client_id', $post_id);
+            return $post_id;
+        }
+
         $id = $this->session->userdata('client_id');
-        return !empty($id) ? trim($id) : 'C-01';
+        return (!empty($id)) ? trim((string)$id) : 'C-01';
     }
 
     /**

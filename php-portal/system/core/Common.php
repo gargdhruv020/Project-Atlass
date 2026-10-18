@@ -48,6 +48,7 @@ if (!function_exists('load_class')) {
         }
 
         $_classes[$class] = isset($param) ? new $name($param) : new $name();
+        is_loaded($class);
         return $_classes[$class];
     }
 }

@@ -83,6 +83,9 @@ class CI_DB_driver {
             $safe_val = $this->escape($value);
             if (strpos($key, ' ') !== false) {
                 $this->wheres[] = "{$key} {$safe_val}";
+            } elseif (strpos($key, '.') !== false) {
+                $parts = explode('.', $key, 2);
+                $this->wheres[] = "`{$parts[0]}`.`{$parts[1]}` = {$safe_val}";
             } else {
                 $this->wheres[] = "`{$key}` = {$safe_val}";
             }
@@ -91,7 +94,12 @@ class CI_DB_driver {
     }
 
     public function order_by($orderby, $direction = 'ASC') {
-        $this->orders[] = "{$orderby} " . strtoupper($direction);
+        if (strpos($orderby, '.') !== false) {
+            $parts = explode('.', $orderby, 2);
+            $this->orders[] = "`{$parts[0]}`.`{$parts[1]}` " . strtoupper($direction);
+        } else {
+            $this->orders[] = "{$orderby} " . strtoupper($direction);
+        }
         return $this;
     }
 

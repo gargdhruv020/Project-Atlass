@@ -12,11 +12,18 @@ class CI_Controller {
     public function __construct() {
         self::$instance =& $this;
 
+        # Core framework classes
+        $this->config   =& load_class('Config', 'core');
+        $this->uri      =& load_class('URI', 'core');
+        $this->router   =& load_class('Router', 'core');
+        $this->output   =& load_class('Output', 'core');
+        $this->security =& load_class('Security', 'core');
+        $this->input    =& load_class('Input', 'core');
+        $this->load     =& load_class('Loader', 'core');
+
         foreach (is_loaded() as $var => $class) {
             $this->$var =& load_class($class);
         }
-
-        $this->load =& load_class('Loader', 'core');
 
         # Autoload components
         if (file_exists(APPPATH . 'config/autoload.php')) {

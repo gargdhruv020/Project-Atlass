@@ -20,12 +20,19 @@ class Fastapi_client {
     public function __construct($config = array()) {
         $this->CI =& get_instance();
         
-        $default_base = $this->CI->config->item('fastapi_base_url');
-        $default_key = $this->CI->config->item('fastapi_api_key');
-        $default_timeout = $this->CI->config->item('fastapi_timeout');
+        $config_obj = (isset($this->CI) && isset($this->CI->config) && is_object($this->CI->config))
+            ? $this->CI->config
+            : load_class('Config', 'core');
 
-        $this->base_url = rtrim(!empty($config['base_url']) ? $config['base_url'] : ($default_base ?: 'http://127.0.0.1:8000'), '/');
-        $this->api_key = !empty($config['api_key']) ? $config['api_key'] : ($default_key ?: 'atlas-dev-key-2026');
+        $default_base = $config_obj ? $config_obj->item('fastapi_base_url') : getenv('FASTAPI_BASE_URL');
+        $default_key = $config_obj ? $config_obj->item('fastapi_api_key') : getenv('API_KEY');
+        $default_timeout = $config_obj ? $config_obj->item('fastapi_timeout') : 30;
+
+        $env_base = getenv('FASTAPI_BASE_URL') ?: 'http://backend:8000';
+        $env_key = getenv('API_KEY') ?: 'atlas-dev-key-2026';
+
+        $this->base_url = rtrim(!empty($config['base_url']) ? $config['base_url'] : ($default_base ?: $env_base), '/');
+        $this->api_key = !empty($config['api_key']) ? $config['api_key'] : ($default_key ?: $env_key);
         $this->timeout = !empty($config['timeout']) ? intval($config['timeout']) : ($default_timeout ? intval($default_timeout) : 30);
     }
 
@@ -42,15 +49,15 @@ class Fastapi_client {
         $endpoint = $this->base_url . '/chat';
 
         $payload = array(
-            'client_id' => trim($client_id),
-            'query'     => trim($query)
+            'client_id' => trim((string)$client_id),
+            'query'     => trim((string)$query)
         );
 
         if (!empty($conversation_id)) {
-            $payload['conversation_id'] = trim($conversation_id);
+            $payload['conversation_id'] = trim((string)$conversation_id);
         }
         if (!empty($report_id)) {
-            $payload['report_id'] = trim($report_id);
+            $payload['report_id'] = trim((string)$report_id);
         }
 
         return $this->_send_request('POST', $endpoint, $payload);
