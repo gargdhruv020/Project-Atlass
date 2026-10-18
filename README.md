@@ -412,6 +412,8 @@ pytest backend/tests/test_security_review.py
 python evaluation/run_evaluation.py
 ```
 
+*For the complete 28-question dataset, category breakdown, and detailed mapping of the 10 mandatory evaluation scenarios, see [`evaluation/README.md`](evaluation/README.md).*
+
 ---
 
 ## 20. Troubleshooting Instructions
