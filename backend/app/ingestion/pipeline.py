@@ -5,7 +5,7 @@ and ingestion reporting.
 """
 
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from app.ingestion.document_parser import DocumentParser, DocumentChunker, DocumentChunk
 from app.retrieval.vector_store import vector_store
 from app.observability.logger import logger
@@ -107,3 +107,6 @@ class ReportIngestionPipeline:
             logger.info("ChromaDB sync complete.")
 
         return summary
+
+    # Backward compatibility alias
+    ingest_directory = execute_pipeline
