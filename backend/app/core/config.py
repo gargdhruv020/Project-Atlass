@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     # Server
     HOST: str = Field(default="0.0.0.0", alias="BACKEND_HOST")
     PORT: int = Field(default=8000, alias="BACKEND_PORT")
+    REQUEST_TIMEOUT_SECONDS: int = 30
+    MAX_REQUEST_SIZE_BYTES: int = 10_000_000
 
     # MySQL Database Settings
     DB_HOST: str = Field(default="127.0.0.1", alias="DB_HOST")
@@ -49,6 +51,7 @@ class Settings(BaseSettings):
     )
 
     # Security & API
+    API_KEY: str = Field(default="atlas-dev-key-2026", alias="API_KEY")
     SECRET_KEY: str = Field(default="atlas-insecure-secret-key-change-in-production", alias="SECRET_KEY")
     CORS_ORIGINS: list[str] = ["*"]
 

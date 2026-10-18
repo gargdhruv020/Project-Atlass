@@ -23,8 +23,9 @@ dist/
 chroma_data/*
 !chroma_data/.gitkeep
 
-# Documents & Generated Reports
+# Documents & Generated Reports & Runtime JSON
 documents/generated/*
+documents/*.json
 !documents/.gitkeep
 !documents/sample_reports/.gitkeep
 
