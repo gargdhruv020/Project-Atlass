@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS `clients` (
 
 INSERT IGNORE INTO `clients` (`id`, `company`, `contact_email`, `purchased_reports`) VALUES
 ('C-01', 'Northwind Utilities', 'operations@northwindutilities.example.com', 'R-101, R-103'),
-('C-02', 'Blue Delta Infra', 'procurement@bluedeltainfra.example.com', 'R-103');
+('C-02', 'Blue Delta Infra', 'procurement@bluedeltainfra.example.com', 'R-103'),
+('C-03', 'Apex Energy Partners', 'compliance@apexenergy.example.com', 'R-101, R-102, R-103');
 
 -- ------------------------------------------------------------------------------
 -- 2. Table: reports
