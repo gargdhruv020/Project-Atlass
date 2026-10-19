@@ -521,9 +521,9 @@ $default_client = !empty($default_client) ? $default_client : (!empty($client_id
         }
 
         function cleanExcerpt(text) {
-            if (!text) return '';
-            // Strip leading markdown hashes and clean up whitespace
-            return text.replace(/^#+\s+/gm, '').replace(/\n+/g, ' ').trim();
+            if (text === null || text === undefined) return '';
+            const str = String(text);
+            return str.replace(/^#+\s+/gm, '').replace(/\n+/g, ' ').trim();
         }
 
         function renderAssistantResponse(data, clientId) {
@@ -563,7 +563,7 @@ $default_client = !empty($default_client) ? $default_client : (!empty($client_id
                         <div class="flex flex-wrap gap-1.5 mt-2">
                             ${data.citations.map(c => `
                                 <span class="text-[10px] font-mono font-medium bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md border border-slate-200/80 flex items-center">
-                                    <strong class="text-brand-700 mr-1">${escapeHtml(c.report_id)}</strong> p.${c.page || 1}
+                                    <strong class="text-brand-700 mr-1">${escapeHtml(c.report_id || 'Report')}</strong> p.${c.page || 1}
                                 </span>
                             `).join('')}
                         </div>
@@ -573,12 +573,12 @@ $default_client = !empty($default_client) ? $default_client : (!empty($client_id
                             ${data.citations.map(c => `
                                 <div class="p-2.5 bg-slate-50 rounded-xl border border-slate-200/70 text-[11px]">
                                     <div class="flex items-center space-x-2 mb-1">
-                                        <span class="font-bold text-brand-700 font-mono bg-brand-100/60 px-1.5 py-0.5 rounded text-[10px]">${escapeHtml(c.report_id)}</span>
-                                        <span class="font-semibold text-slate-800">${escapeHtml(c.title)}</span>
+                                        <span class="font-bold text-brand-700 font-mono bg-brand-100/60 px-1.5 py-0.5 rounded text-[10px]">${escapeHtml(c.report_id || 'Report')}</span>
+                                        <span class="font-semibold text-slate-800">${escapeHtml(c.title || '')}</span>
                                         <span class="text-slate-300">&bull;</span>
                                         <span class="text-slate-500 font-mono text-[10px]">Page ${c.page || 1}</span>
                                     </div>
-                                    <p class="text-slate-600 leading-relaxed italic text-[10.5px]">"${escapeHtml(cleanExcerpt(c.excerpt))}"</p>
+                                    <p class="text-slate-600 leading-relaxed italic text-[10.5px]">"${escapeHtml(cleanExcerpt(c.supporting_excerpt || c.excerpt || ''))}"</p>
                                 </div>
                             `).join('')}
                         </div>
@@ -595,7 +595,10 @@ $default_client = !empty($default_client) ? $default_client : (!empty($client_id
                             <i class="fa-solid fa-triangle-exclamation text-amber-600 mr-2 text-sm"></i> Methodology Scope Discrepancy Identified
                         </div>
                         <div class="space-y-1 pl-5">
-                            ${data.conflicts.map(cf => `<p class="text-amber-800 text-[11px] leading-relaxed">&bull; ${escapeHtml(cf)}</p>`).join('')}
+                            ${data.conflicts.map(cf => {
+                                const desc = (typeof cf === 'object' && cf !== null) ? (cf.description || cf.metric || JSON.stringify(cf)) : String(cf);
+                                return `<p class="text-amber-800 text-[11px] leading-relaxed">&bull; ${escapeHtml(desc)}</p>`;
+                            }).join('')}
                         </div>
                     </div>
                 `;
@@ -604,7 +607,21 @@ $default_client = !empty($default_client) ? $default_client : (!empty($client_id
             // Deterministic Mathematical Derivation Box
             let derivedHtml = '';
             if (data.derived_values && (Array.isArray(data.derived_values) ? data.derived_values.length > 0 : Object.keys(data.derived_values).length > 0)) {
-                const values = Array.isArray(data.derived_values) ? data.derived_values : Object.entries(data.derived_values).map(([k, v]) => `${k}: ${v}`);
+                let values = [];
+                if (Array.isArray(data.derived_values)) {
+                    values = data.derived_values.map(v => (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v));
+                } else {
+                    values = Object.entries(data.derived_values).map(([k, v]) => {
+                        let valStr = '';
+                        if (typeof v === 'object' && v !== null) {
+                            valStr = (v.value !== undefined) ? `${v.value} (${v.formula || ''})` : JSON.stringify(v);
+                        } else {
+                            valStr = String(v);
+                        }
+                        const cleanKey = String(k).replace(/_/g, ' ');
+                        return `${cleanKey}: ${valStr}`;
+                    });
+                }
                 derivedHtml = `
                     <div class="mt-3.5 p-3.5 bg-sky-50/70 border border-sky-200/90 rounded-xl text-xs space-y-1.5">
                         <div class="font-bold text-sky-900 flex items-center">
@@ -728,7 +745,16 @@ $default_client = !empty($default_client) ? $default_client : (!empty($client_id
         }
 
         function escapeHtml(str) {
-            if (!str) return '';
+            if (str === null || str === undefined) return '';
+            if (typeof str === 'object') {
+                try {
+                    str = str.description || str.metric || str.message || JSON.stringify(str);
+                } catch (e) {
+                    str = String(str);
+                }
+            } else {
+                str = String(str);
+            }
             return str
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
